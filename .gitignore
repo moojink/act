@@ -1,3 +1,4 @@
+checkpoints/
 bin
 logs
 wandb

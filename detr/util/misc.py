@@ -466,3 +466,10 @@ def interpolate(input, size=None, scale_factor=None, mode="nearest", align_corne
         return _new_empty_tensor(input, output_shape)
     else:
         return torchvision.ops.misc.interpolate(input, size, scale_factor, mode, align_corners)
+
+
+def str_to_bool(s: str) -> bool:
+    if s not in {'True', 'False'}:
+        raise ValueError('Invalid boolean string argument given.')
+    return s == 'True'
+

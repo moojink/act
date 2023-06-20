@@ -68,20 +68,22 @@ To visualize the episode after it is collected, run
     python3 visualize_episodes.py --dataset_dir <data save dir> --episode_idx 0
 
 To train ACT:
-    
-    # Transfer Cube task
-    python3 imitate_episodes.py \
-    --task_name sim_transfer_cube_scripted \
-    --ckpt_dir <ckpt dir> \
-    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
-    --num_epochs 2000  --lr 1e-5 \
-    --seed 0
+
+    # UPGM R2D2 data
+    python3 act/imitate_episodes.py \
+    --log_dir /iris/u/moojink/upgm/act/checkpoints \
+    --policy_class ACT --kl_weight 10 --chunk_size 15 --hidden_dim 512 --batch_size 64 --dim_feedforward 3200 \
+    --num_epochs 20000  --lr 1e-5 \
+    --seed 0 \
+    --data_dir=/iris/u/moojink/upgm/R2D2/data_1_2023-04-26_128-demos-5-objects,R2D2/data_2_2023-05-02_50-demos-red-cube-fixed-robot-pose,R2D2/data_3_2023-05-02_50-demos-blue-and-white-milk-carton-fixed-robot-pose,R2D2/data_4_2023-05-03_56-demos-2-objects,R2D2/data_5_2023-05-10_76-demos-3-objects,R2D2/data_6_2023-05-14_136-demos-5-objects,R2D2/data_7_2023-05-15_152-demos-5-objects
+
+Add ``--checkpoint_dir`` and ``--checkpoint_epoch`` to load a checkpoint. Add ``--load_optimizer=True`` if you want to load the optimizer state.
 
 
 To evaluate the policy, run the same command but add ``--eval``. This loads the best validation checkpoint.
 The success rate should be around 90% for transfer cube, and around 50% for insertion.
 To enable temporal ensembling, add flag ``--temporal_agg``.
-Videos will be saved to ``<ckpt_dir>`` for each rollout.
+Videos will be saved to ``<log_dir>`` for each rollout.
 You can also add ``--onscreen_render`` to see real-time rendering during evaluation.
 
 For real-world data where things can be harder to model, train for at least 5000 epochs or 3-4 times the length after the loss has plateaued.

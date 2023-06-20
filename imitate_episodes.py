@@ -1,4 +1,7 @@
+import cv2
+import imageio
 import torch
+import time
 import numpy as np
 import os
 import pickle
@@ -13,41 +16,46 @@ from constants import PUPPET_GRIPPER_JOINT_OPEN
 from utils import load_data # data functions
 from utils import sample_box_pose, sample_insertion_pose # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
+from utils import str_to_bool # for arg parsing bool args
 from policy import ACTPolicy, CNNMLPPolicy
 from visualize_episodes import save_videos
 
-from sim_env import BOX_POSE
+from r2d2.robot_env import RobotEnv
+from torch.utils.tensorboard import SummaryWriter
+from upgm.utils.data_utils import get_mp4_filepaths, get_traj_hdf5_filepaths, read_mp4
+from dummy_robot_env import DummyRobotEnv # TODO remove
 
 import IPython
 e = IPython.embed
+
+np.set_printoptions(formatter={'float': lambda x: "{0:0.3f}".format(x)})
 
 def main(args):
     set_seed(1)
     # command line parameters
     is_eval = args['eval']
-    ckpt_dir = args['ckpt_dir']
+    log_dir = args['log_dir']
+    if not is_eval:
+        log_dir = update_log_dir(log_dir)
     policy_class = args['policy_class']
     onscreen_render = args['onscreen_render']
-    task_name = args['task_name']
     batch_size_train = args['batch_size']
     batch_size_val = args['batch_size']
     num_epochs = args['num_epochs']
+    checkpoint_dir = args['checkpoint_dir']
+    checkpoint_epoch = args['checkpoint_epoch']
+    load_optimizer = args['load_optimizer']
 
     # get task parameters
-    is_sim = task_name[:4] == 'sim_'
-    if is_sim:
-        from constants import SIM_TASK_CONFIGS
-        task_config = SIM_TASK_CONFIGS[task_name]
-    else:
-        from aloha_scripts.constants import TASK_CONFIGS
-        task_config = TASK_CONFIGS[task_name]
-    dataset_dir = task_config['dataset_dir']
-    num_episodes = task_config['num_episodes']
-    episode_len = task_config['episode_len']
-    camera_names = task_config['camera_names']
+    if not is_eval:
+        dataset_dir = args['data_dir']
+        mp4_filepaths = get_mp4_filepaths(data_dir=dataset_dir, cam_serial_num=args['cam_serial_num']) # list of paths to the demonstration videos
+        num_episodes = len(mp4_filepaths)
+    episode_len = 100
+    camera_names = [args['cam_serial_num']]
 
     # fixed parameters
-    state_dim = 14
+    state_dim = 7 # this is like the action dim
     lr_backbone = 1e-5
     backbone = 'resnet18'
     if policy_class == 'ACT':
@@ -74,18 +82,20 @@ def main(args):
 
     config = {
         'num_epochs': num_epochs,
-        'ckpt_dir': ckpt_dir,
+        'log_dir': log_dir,
         'episode_len': episode_len,
         'state_dim': state_dim,
         'lr': args['lr'],
         'policy_class': policy_class,
         'onscreen_render': onscreen_render,
         'policy_config': policy_config,
-        'task_name': task_name,
         'seed': args['seed'],
         'temporal_agg': args['temporal_agg'],
         'camera_names': camera_names,
-        'real_robot': not is_sim
+        'real_robot': True,
+        'checkpoint_dir': checkpoint_dir,
+        'checkpoint_epoch': checkpoint_epoch,
+        'load_optimizer': load_optimizer,
     }
 
     if is_eval:
@@ -103,9 +113,7 @@ def main(args):
     train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val)
 
     # save dataset stats
-    if not os.path.isdir(ckpt_dir):
-        os.makedirs(ckpt_dir)
-    stats_path = os.path.join(ckpt_dir, f'dataset_stats.pkl')
+    stats_path = os.path.join(log_dir, f'dataset_stats.pkl')
     with open(stats_path, 'wb') as f:
         pickle.dump(stats, f)
 
@@ -113,8 +121,8 @@ def main(args):
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
 
     # save best checkpoint
-    ckpt_path = os.path.join(ckpt_dir, f'policy_best.ckpt')
-    torch.save(best_state_dict, ckpt_path)
+    checkpoint_path = os.path.join(log_dir, f'policy_best.ckpt')
+    torch.save(best_state_dict, checkpoint_path)
     print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
 
 
@@ -148,183 +156,173 @@ def get_image(ts, camera_names):
     return curr_image
 
 
+def save_rollout_gif(img_list):
+    """Turns a list of images into a video and saves it."""
+    if img_list == []:
+        return
+    speedup = 3
+    img_list = [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in img_list]
+    rollout_path = 'rollout.gif'
+    effective_fps = 15 * speedup
+    duration_in_milliseconds = 1000 * 1 / effective_fps
+    imageio.mimwrite(rollout_path, img_list, duration=duration_in_milliseconds, loop=True)
+    print(f'Saved rollout GIF at path {rollout_path}')
+
 def eval_bc(config, ckpt_name, save_episode=True):
-    set_seed(1000)
-    ckpt_dir = config['ckpt_dir']
+    seed = config['seed']
+    set_seed(seed)
+    checkpoint_dir = config['checkpoint_dir']
+    checkpoint_epoch = config['checkpoint_epoch']
     state_dim = config['state_dim']
-    real_robot = config['real_robot']
+    real_robot = True
     policy_class = config['policy_class']
-    onscreen_render = config['onscreen_render']
     policy_config = config['policy_config']
     camera_names = config['camera_names']
-    max_timesteps = config['episode_len']
-    task_name = config['task_name']
+    max_timesteps = 300
     temporal_agg = config['temporal_agg']
-    onscreen_cam = 'angle'
 
     # load policy and stats
-    ckpt_path = os.path.join(ckpt_dir, ckpt_name)
+    checkpoint_path = os.path.join(checkpoint_dir, f'policy_epoch_{checkpoint_epoch}_seed_{seed}.ckpt')
     policy = make_policy(policy_class, policy_config)
-    loading_status = policy.load_state_dict(torch.load(ckpt_path))
+    loading_status = policy.load_state_dict(torch.load(checkpoint_path))
     print(loading_status)
     policy.cuda()
     policy.eval()
-    print(f'Loaded: {ckpt_path}')
-    stats_path = os.path.join(ckpt_dir, f'dataset_stats.pkl')
+    print(f'Loaded: {checkpoint_path}')
+    stats_path = os.path.join(checkpoint_dir, f'dataset_stats.pkl')
     with open(stats_path, 'rb') as f:
         stats = pickle.load(f)
 
     pre_process = lambda s_qpos: (s_qpos - stats['qpos_mean']) / stats['qpos_std']
     post_process = lambda a: a * stats['action_std'] + stats['action_mean']
 
-    # load environment
-    if real_robot:
-        from aloha_scripts.robot_utils import move_grippers # requires aloha
-        from aloha_scripts.real_env import make_real_env # requires aloha
-        env = make_real_env(init_node=True)
-        env_max_reward = 0
-    else:
-        from sim_env import make_sim_env
-        env = make_sim_env(task_name)
-        env_max_reward = env.task.max_reward
-
+    # Make the robot environment.
+    env = RobotEnv(action_space='cartesian_velocity')
+    env_max_reward = 0
     query_frequency = policy_config['num_queries']
     if temporal_agg:
         query_frequency = 1
         num_queries = policy_config['num_queries']
+    target_label = ''
 
-    max_timesteps = int(max_timesteps * 1) # may increase for real-world tasks
+    while True:
+        # Ask the user for the target object description.
+        if target_label == '':
+            target_label = input('Enter the target object to grasp: ')
+        else:
+            user_input = input('Enter the target object to grasp. To repeat the previous target object, press Enter without typing anything: ')
+            if user_input != '':
+                target_label = user_input
+        print(f'Target object to grasp: {target_label}')
+        env.reset()
+        input('Press Enter to begin...')
 
-    num_rollouts = 50
-    episode_returns = []
-    highest_rewards = []
-    for rollout_id in range(num_rollouts):
-        rollout_id += 0
-        ### set task
-        if 'sim_transfer_cube' in task_name:
-            BOX_POSE[0] = sample_box_pose() # used in sim reset
-        elif 'sim_insertion' in task_name:
-            BOX_POSE[0] = np.concatenate(sample_insertion_pose()) # used in sim reset
-
-        ts = env.reset()
-
-        ### onscreen render
-        if onscreen_render:
-            ax = plt.subplot()
-            plt_img = ax.imshow(env._physics.render(height=480, width=640, camera_id=onscreen_cam))
-            plt.ion()
 
         ### evaluation loop
         if temporal_agg:
             all_time_actions = torch.zeros([max_timesteps, max_timesteps+num_queries, state_dim]).cuda()
-
-        qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
+        qpos_history = torch.zeros((1, max_timesteps, 7)).cuda()
         image_list = [] # for visualization
-        qpos_list = []
-        target_qpos_list = []
-        rewards = []
         with torch.inference_mode():
             for t in range(max_timesteps):
-                ### update onscreen render and wait for DT
-                if onscreen_render:
-                    image = env._physics.render(height=480, width=640, camera_id=onscreen_cam)
-                    plt_img.set_data(image)
-                    plt.pause(DT)
-
-                ### process previous timestep to get qpos and image_list
-                obs = ts.observation
-                if 'images' in obs:
-                    image_list.append(obs['images'])
-                else:
-                    image_list.append({'main': obs['image']})
-                qpos_numpy = np.array(obs['qpos'])
-                qpos = pre_process(qpos_numpy)
-                qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
-                qpos_history[:, t] = qpos
-                curr_image = get_image(ts, camera_names)
-
-                ### query policy
-                if config['policy_class'] == "ACT":
-                    if t % query_frequency == 0:
-                        all_actions = policy(qpos, curr_image)
-                    if temporal_agg:
-                        all_time_actions[[t], t:t+num_queries] = all_actions
-                        actions_for_curr_step = all_time_actions[:, t]
-                        actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
-                        actions_for_curr_step = actions_for_curr_step[actions_populated]
-                        k = 0.01
-                        exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-                        exp_weights = exp_weights / exp_weights.sum()
-                        exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
-                        raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                try:
+                    print(f'step: {t}')
+                    # Mark starting time.
+                    step_start_time = time.time()
+                    ### process previous timestep to get qpos and image_list
+                    # Get environment image observations.
+                    obs_dict = env.get_observation()
+                    image = obs_dict['image'][camera_names[0]][:] # shape: (480, 640, 3)
+                    image = image[:, 80:560, :] # shape: (480, 480, 3)
+                    image = cv2.resize(image, (256, 256)) # shape: (256, 256, 3)
+                    image_list.append(image)
+                    # Get robot state.
+                    # For now, we just set the robot state to all zeros since the policy does not have proprioceptive inputs.
+                    # qpos = np.append(obs_dict['robot_state']['joint_positions'], obs_dict['robot_state']['gripper_position'])
+                    qpos = np.zeros((7,))
+                    qpos = pre_process(qpos)
+                    qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
+                    qpos_history[:, t] = qpos
+                    # Reshape the image before feeding it into the policy.
+                    image = torch.from_numpy(image).float().cuda().unsqueeze(0) # shape: (num_cameras=1, H, W, C)
+                    image = image.unsqueeze(0) # shape: (batch_size=1, num_cameras=1, H, W, C)
+                    image = torch.einsum('n k h w c -> n k c h w', image) # shape: (batch_size=1, num_cameras=1, C, H, W)
+                    # normalize image and change dtype to float
+                    image = image / 255.0
+                    ### query policy
+                    if config['policy_class'] == "ACT":
+                        if t % query_frequency == 0:
+                            all_actions = policy(qpos, image, target_label=target_label)
+                        if temporal_agg:
+                            all_time_actions[[t], t:t+num_queries] = all_actions
+                            actions_for_curr_step = all_time_actions[:, t]
+                            actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+                            actions_for_curr_step = actions_for_curr_step[actions_populated]
+                            k = 0.01
+                            exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+                            exp_weights = exp_weights / exp_weights.sum()
+                            exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+                            raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                        else:
+                            raw_action = all_actions[:, t % query_frequency]
+                    elif config['policy_class'] == "CNNMLP":
+                        raw_action = policy(qpos, image, target_label=target_label)
                     else:
-                        raw_action = all_actions[:, t % query_frequency]
-                elif config['policy_class'] == "CNNMLP":
-                    raw_action = policy(qpos, curr_image)
-                else:
-                    raise NotImplementedError
-
-                ### post-process actions
-                raw_action = raw_action.squeeze(0).cpu().numpy()
-                action = post_process(raw_action)
-                target_qpos = action
-
-                ### step the environment
-                ts = env.step(target_qpos)
-
-                ### for visualization
-                qpos_list.append(qpos_numpy)
-                target_qpos_list.append(target_qpos)
-                rewards.append(ts.reward)
-
-            plt.close()
-        if real_robot:
-            move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5)  # open
-            pass
-
-        rewards = np.array(rewards)
-        episode_return = np.sum(rewards[rewards!=None])
-        episode_returns.append(episode_return)
-        episode_highest_reward = np.max(rewards)
-        highest_rewards.append(episode_highest_reward)
-        print(f'Rollout {rollout_id}\n{episode_return=}, {episode_highest_reward=}, {env_max_reward=}, Success: {episode_highest_reward==env_max_reward}')
-
-        if save_episode:
-            save_videos(image_list, DT, video_path=os.path.join(ckpt_dir, f'video{rollout_id}.mp4'))
-
-    success_rate = np.mean(np.array(highest_rewards) == env_max_reward)
-    avg_return = np.mean(episode_returns)
-    summary_str = f'\nSuccess rate: {success_rate}\nAverage return: {avg_return}\n\n'
-    for r in range(env_max_reward+1):
-        more_or_equal_r = (np.array(highest_rewards) >= r).sum()
-        more_or_equal_r_rate = more_or_equal_r / num_rollouts
-        summary_str += f'Reward >= {r}: {more_or_equal_r}/{num_rollouts} = {more_or_equal_r_rate*100}%\n'
-
-    print(summary_str)
-
-    # save success rate to txt
-    result_file_name = 'result_' + ckpt_name.split('.')[0] + '.txt'
-    with open(os.path.join(ckpt_dir, result_file_name), 'w') as f:
-        f.write(summary_str)
-        f.write(repr(episode_returns))
-        f.write('\n\n')
-        f.write(repr(highest_rewards))
-
-    return success_rate, avg_return
+                        raise NotImplementedError
+                    ### post-process actions
+                    raw_action = raw_action.squeeze(0).cpu().numpy()
+                    action = post_process(raw_action)
+                    action = np.clip(action, -1, 1)
+                    ### step the environment
+                    print(f'action: {action}')
+                    action_info = env.step(action)
+                    # Sleep the amount necessary to maintain consistent control frequency.
+                    elapsed_time = time.time() - step_start_time
+                    time_to_sleep = (1 / env.control_hz) - elapsed_time
+                    print('time_to_sleep:', time_to_sleep)
+                    if time_to_sleep > 0:
+                        time.sleep(time_to_sleep)
+                except KeyboardInterrupt:
+                    # save_rollout_gif(image_list)
+                    image_list = [] # reset the episode replay GIF
+                    user_input = input('\nEnter (Ctrl-C) to quit the program, or anything else to continue to the next episode...')
+                    break
 
 
 def forward_pass(data, policy):
-    image_data, qpos_data, action_data, is_pad = data
+    image_data, qpos_data, action_data, is_pad, target_label = data
     image_data, qpos_data, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
-    return policy(qpos_data, image_data, action_data, is_pad) # TODO remove None
+    return policy(qpos_data, image_data, action_data, is_pad, target_label) # TODO remove None
+
+
+def update_log_dir(log_dir):
+    """
+    Updates the log directory by appending a new experiment number.
+    Example: 'logs/bc/' -> 'logs/bc/1' if 'logs/bc/0' exists and is the only experiment completed thus far.
+    """
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+    sub_dirs = [sub_dir for sub_dir in os.listdir(log_dir) if os.path.isdir(os.path.join(log_dir, sub_dir))]
+    if len(sub_dirs) == 0:
+        log_dir = os.path.join(log_dir, '0')
+    else:
+        sub_dirs_as_ints = [int(s) for s in sub_dirs]
+        last_sub_dir = max(sub_dirs_as_ints)
+        log_dir = os.path.join(log_dir, str(last_sub_dir + 1))
+    os.makedirs(log_dir)
+    return log_dir
 
 
 def train_bc(train_dataloader, val_dataloader, config):
     num_epochs = config['num_epochs']
-    ckpt_dir = config['ckpt_dir']
+    log_dir = config['log_dir']
     seed = config['seed']
     policy_class = config['policy_class']
     policy_config = config['policy_config']
+    tb_writer = SummaryWriter(log_dir=log_dir)
+    checkpoint_dir = config['checkpoint_dir']
+    checkpoint_epoch = config['checkpoint_epoch']
+    load_optimizer = config['load_optimizer']
 
     set_seed(seed)
 
@@ -332,13 +330,33 @@ def train_bc(train_dataloader, val_dataloader, config):
     policy.cuda()
     optimizer = make_optimizer(policy_class, policy)
 
+    # Load checkpoint if applicable.
+    if checkpoint_epoch != '':
+        checkpoint_path = os.path.join(checkpoint_dir, f'policy_epoch_{checkpoint_epoch}_seed_{seed}.ckpt')
+        checkpoint = torch.load(checkpoint_path)
+        policy.load_state_dict(checkpoint)
+        print(f'Loaded checkpoint from {checkpoint_path}')
+        # Load optimizer state if applicable.
+        if load_optimizer:
+            optimizer_state_path = os.path.join(checkpoint_dir, f'optimizer_epoch_{checkpoint_epoch}_seed_{seed}.ckpt')
+            optimizer_state = torch.load(optimizer_state_path)
+            optimizer.load_state_dict(optimizer_state)
+
     train_history = []
     validation_history = []
     min_val_loss = np.inf
     best_ckpt_info = None
-    for epoch in tqdm(range(num_epochs)):
+
+    # Set start and end epoch numbers (offset them if loading checkpoint).
+    epoch_start = 1
+    epoch_end = num_epochs
+    if checkpoint_epoch != '':
+        epoch_start = int(checkpoint_epoch) + 1
+        epoch_end += int(checkpoint_epoch)
+    for epoch in tqdm(range(epoch_start, epoch_end + 1)):
         print(f'\nEpoch {epoch}')
         # validation
+        start_time = time.time()
         with torch.inference_mode():
             policy.eval()
             epoch_dicts = []
@@ -352,7 +370,11 @@ def train_bc(train_dataloader, val_dataloader, config):
             if epoch_val_loss < min_val_loss:
                 min_val_loss = epoch_val_loss
                 best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
+        elapsed_time = time.time() - start_time
         print(f'Val loss:   {epoch_val_loss:.5f}')
+        print(f'Seconds per epoch (val):   {elapsed_time:.5f}')
+        tb_writer.add_scalar(f'loss (val)', epoch_val_loss, epoch)
+        tb_writer.add_scalar(f'sec/epoch (val)', elapsed_time, epoch)
         summary_string = ''
         for k, v in epoch_summary.items():
             summary_string += f'{k}: {v.item():.3f} '
@@ -361,6 +383,8 @@ def train_bc(train_dataloader, val_dataloader, config):
         # training
         policy.train()
         optimizer.zero_grad()
+        epoch_dicts = []
+        start_time = time.time()
         for batch_idx, data in enumerate(train_dataloader):
             forward_dict = forward_pass(data, policy)
             # backward
@@ -368,38 +392,42 @@ def train_bc(train_dataloader, val_dataloader, config):
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-            train_history.append(detach_dict(forward_dict))
-        epoch_summary = compute_dict_mean(train_history[(batch_idx+1)*epoch:(batch_idx+1)*(epoch+1)])
+            epoch_dicts.append(detach_dict(forward_dict))
+        elapsed_time = time.time() - start_time
+        epoch_summary = compute_dict_mean(epoch_dicts)
+        train_history.append(epoch_summary)
         epoch_train_loss = epoch_summary['loss']
         print(f'Train loss: {epoch_train_loss:.5f}')
+        print(f'Seconds per epoch (train):   {elapsed_time:.5f}')
+        tb_writer.add_scalar(f'loss (train)', epoch_train_loss, epoch)
+        tb_writer.add_scalar(f'sec/epoch (train)', elapsed_time, epoch)
         summary_string = ''
         for k, v in epoch_summary.items():
             summary_string += f'{k}: {v.item():.3f} '
         print(summary_string)
 
-        if epoch % 100 == 0:
-            ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
-            torch.save(policy.state_dict(), ckpt_path)
-            plot_history(train_history, validation_history, epoch, ckpt_dir, seed)
+        if epoch % int(num_epochs / 10) == 0:
+            checkpoint_path = os.path.join(log_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
+            torch.save(policy.state_dict(), checkpoint_path)
 
-    ckpt_path = os.path.join(ckpt_dir, f'policy_last.ckpt')
-    torch.save(policy.state_dict(), ckpt_path)
+    # Save final epoch checkpoint with optimizer state as well so that we can later resume training from where we left off.
+    checkpoint_path = os.path.join(log_dir, f'policy_epoch_{epoch_end}_seed_{seed}.ckpt')
+    torch.save(policy.state_dict(), checkpoint_path)
+    optimizer_state_path = os.path.join(log_dir, f'optimizer_epoch_{epoch_end}_seed_{seed}.ckpt')
+    torch.save(optimizer.state_dict(), checkpoint_path)
 
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
-    ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{best_epoch}_seed_{seed}.ckpt')
-    torch.save(best_state_dict, ckpt_path)
+    checkpoint_path = os.path.join(log_dir, f'policy_epoch_{best_epoch}_seed_{seed}.ckpt')
+    torch.save(best_state_dict, checkpoint_path)
     print(f'Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at epoch {best_epoch}')
-
-    # save training curves
-    plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed)
 
     return best_ckpt_info
 
 
-def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):
+def plot_history(train_history, validation_history, num_epochs, log_dir, seed):
     # save training curves
     for key in train_history[0]:
-        plot_path = os.path.join(ckpt_dir, f'train_val_{key}_seed_{seed}.png')
+        plot_path = os.path.join(log_dir, f'train_val_{key}_seed_{seed}.png')
         plt.figure()
         train_values = [summary[key].item() for summary in train_history]
         val_values = [summary[key].item() for summary in validation_history]
@@ -410,20 +438,25 @@ def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):
         plt.legend()
         plt.title(key)
         plt.savefig(plot_path)
-    print(f'Saved plots to {ckpt_dir}')
+    print(f'Saved plots to {log_dir}')
+
+
+def str_to_bool(s: str) -> bool:
+    if s not in {'True', 'False'}:
+        raise ValueError('Invalid boolean string argument given.')
+    return s == 'True'
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--onscreen_render', action='store_true')
-    parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=True)
+    parser.add_argument("--log_dir", type=str, default='/iris/u/moojink/upgm/act/checkpoints', help="Logs directory for TensorBoard stats and policy demo gifs.")
     parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
-    parser.add_argument('--task_name', action='store', type=str, help='task_name', required=True)
-    parser.add_argument('--batch_size', action='store', type=int, help='batch_size', required=True)
+    parser.add_argument("--batch_size", type=int, default=64, help="Batch size per gradient step.")
     parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
-    parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
-    parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
+    parser.add_argument("--num_epochs", type=int, default=100000, help="Number of epochs to train for.")
+    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate.")
 
     # for ACT
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
@@ -431,5 +464,17 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
     parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
     parser.add_argument('--temporal_agg', action='store_true')
+
+    # from UPGM R2D2
+    parser.add_argument("--data_dir", type=str, default='R2D2/data',
+                        help="Directory containing the expert demonstrations used for training.")
+    parser.add_argument("--cam_serial_num", type=str, default='138422074005',
+                        help="Serial number of the camera used to record videos of the demonstration trajectories.")
+    parser.add_argument("--checkpoint_dir", type=str,
+                        help="Directory containing the saved checkpoint.")
+    parser.add_argument("--checkpoint_epoch", type=str, default='',
+                        help="The epoch number at which to resume training. If 0, start fresh.")
+    parser.add_argument("--load_optimizer", type=str_to_bool, default=False,
+                        help="(Only applicable when loading checkpoint) Whether to load the previously saved optimizer state.")
     
     main(vars(parser.parse_args()))
