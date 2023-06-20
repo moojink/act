@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from .models import build_ACT_model, build_CNNMLP_model
+from .util.misc import str_to_bool # for arg parsing bool args
 
 import IPython
 e = IPython.embed
@@ -55,15 +56,23 @@ def get_args_parser():
     # repeat args in imitate_episodes just to avoid error. Will not be used
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--onscreen_render', action='store_true')
-    parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=True)
+    parser.add_argument('--log_dir', action='store', type=str, help='log_dir', required=True)
     parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
-    parser.add_argument('--task_name', action='store', type=str, help='task_name', required=True)
     parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
     parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
     parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
     parser.add_argument('--temporal_agg', action='store_true')
-
+    parser.add_argument("--data_dir", type=str, default='R2D2/data',
+                        help="Directory containing the expert demonstrations used for training.")
+    parser.add_argument("--cam_serial_num", type=str, default='138422074005',
+                        help="Serial number of the camera used to record videos of the demonstration trajectories.")
+    parser.add_argument("--checkpoint_dir", type=str,
+                        help="Directory containing the saved checkpoint.")
+    parser.add_argument("--checkpoint_epoch", type=str, default='',
+                        help="The epoch number at which to resume training. If 0, start fresh.")
+    parser.add_argument("--load_optimizer", type=str_to_bool, default=False,
+                        help="(Only applicable when loading checkpoint) Whether to load the previously saved optimizer state.")
     return parser
 
 
