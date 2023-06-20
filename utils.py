@@ -40,8 +40,8 @@ class EpisodicDataset(torch.utils.data.Dataset):
             action = action.astype('float32') # Cast from float64 to float32. The loss of precision is negligible for our purposes.
             # Read a text annotation (e.g., 'small red cube') from disk.
             target_label = f.attrs['current_task']
-            # Hard-coding joint positions/velocities as zeros since we don't use them as inputs in UPGM.
-            qpos = np.zeros((7,))
+            # Read joint positions (7 robot arm joints + 1 for gripper).
+            qpos = np.append(f['observation']['robot_state']['joint_positions'][step_index], f['observation']['robot_state']['gripper_position'][step_index])
             action_length = episode_length - step_index
         # Create padded actions tensor and is_pad bool tensors because they're required by the Transformer policy.
         padded_action = np.zeros(padded_action_shape, dtype=np.float32)
@@ -83,8 +83,9 @@ def get_norm_stats(dataset_dir, num_episodes):
     all_action_data = []
     for hdf5_filepath in traj_hdf5_filepaths:
         with h5py.File(hdf5_filepath, 'r') as f:
-            # Read action labels. Since we don't use joint positions as inputs, just set them as zeros.
-            qpos = np.zeros((f['observation']['robot_state']['joint_positions'].shape[0], 7)).astype('float32') # hard-coding 7 joint positions (even though Franka has 7 + 1, where last 1 is gripper)
+            # Read joint positions and action labels.
+            # qpos = np.zeros((f['observation']['robot_state']['joint_positions'].shape[0], 7)).astype('float32') # hard-coding 7 joint positions (even though Franka has 7 + 1, where last 1 is gripper)
+            qpos = np.concatenate((f['observation']['robot_state']['joint_positions'][:], np.expand_dims(f['observation']['robot_state']['gripper_position'][:], axis=1)), axis=1)
             action = np.concatenate((f['action']['cartesian_velocity'][:], np.expand_dims(f['action']['gripper_action'][:], axis=1)), axis=1) # shape: (num_steps_in_traj, action_dim)
             action = action.astype('float32') # Cast from float64 to float32. The loss of precision is negligible for our purposes.
         all_qpos_data.append(torch.from_numpy(qpos))
