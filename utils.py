@@ -2,8 +2,10 @@ import numpy as np
 import torch
 import os
 import h5py
+import random
+import torchvision.transforms as transforms
 from torch.utils.data import TensorDataset, DataLoader
-from upgm.utils.data_utils import get_mp4_filepaths, get_traj_hdf5_filepaths
+from upgm.utils.data_utils import get_actions_and_target_labels_dict, get_actions_dict, get_images_dict, get_mp4_filepaths, get_target_labels_dict, get_traj_hdf5_filepaths
 
 import IPython
 e = IPython.embed
@@ -15,7 +17,6 @@ class EpisodicDataset(torch.utils.data.Dataset):
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names
         self.norm_stats = norm_stats
-        self.is_sim = False # hard-coded
         # For UPGM R2D2:
         self.mp4_filepaths = get_mp4_filepaths(data_dir=self.dataset_dir, cam_serial_num=self.camera_names[0]) # list of paths to the demonstration videos
         self.traj_hdf5_filepaths = get_traj_hdf5_filepaths(data_dir=self.dataset_dir) # list of paths to the `trajectory.h5` files containing action labels
@@ -77,6 +78,98 @@ class EpisodicDataset(torch.utils.data.Dataset):
         return image_data, qpos_data, action_data, is_pad, target_label
 
 
+class EpisodicDatasetMemory(torch.utils.data.Dataset):
+    """Data loader that loads the whole dataset into memory."""
+    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats):
+        super(EpisodicDatasetMemory).__init__()
+        self.episode_ids = episode_ids
+        self.dataset_dir = dataset_dir
+        self.camera_names = camera_names
+        self.norm_stats = norm_stats
+        # For UPGM R2D2:
+        mp4_filepaths = get_mp4_filepaths(data_dir=self.dataset_dir, cam_serial_num=self.camera_names[0]) # list of paths to the demonstration videos
+        traj_hdf5_filepaths = get_traj_hdf5_filepaths(data_dir=self.dataset_dir) # list of paths to the `trajectory.h5` files containing action labels
+        self.max_episode_length = 300 # hardcoded; the policy requires all sampled actions to have the same length
+        # Read everything from disk into memory.
+        self.images_dict = get_images_dict(mp4_filepaths)
+        self.actions_and_target_labels_dict = get_actions_and_target_labels_dict(traj_hdf5_filepaths)
+        # self.actions_dict = get_actions_dict(traj_hdf5_filepaths)
+        # self.target_labels_dict = get_target_labels_dict(traj_hdf5_filepaths)
+
+    def __len__(self):
+        return len(self.episode_ids)
+
+    def __getitem__(self, index):
+        # Fetch image.
+        episode_length = self.images_dict[index].shape[0]
+        step_index = np.random.randint(0, episode_length)
+        image = self.images_dict[index][step_index] # shape: (H, W, 3)
+        image_dict = dict()
+        image_dict[self.camera_names[0]] = image
+        # Fetch action labels. Get all actions after and including step_index.
+        padded_action_shape = (self.max_episode_length, self.actions_and_target_labels_dict[index]['action'].shape[1])
+        action = self.actions_and_target_labels_dict[index]['action'][step_index:] # shape: (num_steps_after_index, action_dim)
+        # Read a text annotation (e.g., 'small red cube') from disk.
+        target_label = self.actions_and_target_labels_dict[index]['target_label']
+        # Hard-coding joint positions/velocities as zeros since we don't use them as inputs in UPGM.
+        qpos = np.zeros((7,))
+        action_length = episode_length - step_index
+        # Create padded actions tensor and is_pad bool tensors because they're required by the Transformer policy.
+        padded_action = np.zeros(padded_action_shape, dtype=np.float32)
+        padded_action[:action_length] = action
+        is_pad = np.zeros(self.max_episode_length)
+        is_pad[action_length:] = 1
+        # new axis for different cameras
+        # For UPGM, we only have 1 camera (the wrist camera).
+        all_cam_images = []
+        for cam_name in self.camera_names:
+            all_cam_images.append(image_dict[cam_name])
+        all_cam_images = np.stack(all_cam_images, axis=0)
+        # construct observations
+        image_data = torch.from_numpy(all_cam_images)
+        qpos_data = torch.from_numpy(qpos).float()
+        action_data = torch.from_numpy(padded_action).float()
+        is_pad = torch.from_numpy(is_pad).bool()
+        # channel last
+        image_data = torch.einsum('k h w c -> k c h w', image_data) # This is just a way to transpose the tensor. k == # cameras == 1 in UPGM R2D2.
+        # normalize image and change dtype to float
+        image_data = image_data / 255.0
+        action_data = (action_data - self.norm_stats["action_mean"]) / self.norm_stats["action_std"]
+        qpos_data = (qpos_data - self.norm_stats["qpos_mean"]) / self.norm_stats["qpos_std"]
+        return image_data, qpos_data, action_data, is_pad, target_label
+
+
+class AugmentedExpertedDataset(torch.utils.data.Dataset):
+    """
+    Apply data augmentation transformations to a Dataset.
+
+    Arguments:
+        dataset (Dataset): A Dataset that returns (sample, target).
+    """
+    def __init__(self, dataset):
+        self.dataset = dataset
+        self.pad = transforms.Pad(12, padding_mode='edge') # padding each side by 12 by repeating boundary pixels as in DrQ
+        self.rc = transforms.RandomCrop(256, padding=0)
+
+    def transform(self, image_data, qpos_data, action_data, is_pad, target_label):
+        if random.uniform(0, 1) < 0.5: # apply augmentation 50% of the time
+            images = image_data * 255.0
+            # import cv2
+            # cv2.imwrite('images0.png', np.transpose(images[0].numpy(), (1,2,0)))
+            images = self.pad(images)
+            # cv2.imwrite('images1.png', np.transpose(images[0].numpy(), (1,2,0)))
+            images = self.rc(images)
+            # cv2.imwrite('images2.png', np.transpose(images[0].numpy(), (1,2,0)))
+            image_data = images / 255.0
+        return image_data, qpos_data, action_data, is_pad, target_label
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        return self.transform(*self.dataset.__getitem__(idx))
+
+
 def get_norm_stats(dataset_dir, num_episodes):
     traj_hdf5_filepaths = get_traj_hdf5_filepaths(dataset_dir) # list of paths to the `trajectory.h5` files containing action labels
     all_qpos_data = []
@@ -120,12 +213,13 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     norm_stats = get_norm_stats(dataset_dir, num_episodes)
 
     # construct dataset and dataloader
-    train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats)
-    val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats)
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=5)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=5)
+    train_dataset = EpisodicDatasetMemory(train_indices, dataset_dir, camera_names, norm_stats)
+    train_dataset = AugmentedExpertedDataset(train_dataset)
+    val_dataset = EpisodicDatasetMemory(val_indices, dataset_dir, camera_names, norm_stats)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True)
 
-    return train_dataloader, val_dataloader, norm_stats, train_dataset.is_sim
+    return train_dataloader, val_dataloader, norm_stats
 
 
 ### env utils

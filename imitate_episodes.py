@@ -110,7 +110,7 @@ def main(args):
         print()
         exit()
 
-    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val)
+    train_dataloader, val_dataloader, stats = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val)
 
     # save dataset stats
     stats_path = os.path.join(log_dir, f'dataset_stats.pkl')
@@ -451,7 +451,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--onscreen_render', action='store_true')
-    parser.add_argument("--log_dir", type=str, default='/iris/u/moojink/upgm/act/checkpoints', help="Logs directory for TensorBoard stats and policy demo gifs.")
+    parser.add_argument("--log_dir", type=str, default='act/checkpoints', help="Logs directory for TensorBoard stats and policy demo gifs.")
     parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size per gradient step.")
     parser.add_argument('--seed', action='store', type=int, help='seed', required=True)

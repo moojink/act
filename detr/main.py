@@ -56,7 +56,7 @@ def get_args_parser():
     # repeat args in imitate_episodes just to avoid error. Will not be used
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--onscreen_render', action='store_true')
-    parser.add_argument("--log_dir", type=str, default='/iris/u/moojink/upgm/act/checkpoints', help="Logs directory for TensorBoard stats and policy demo gifs.")
+    parser.add_argument("--log_dir", type=str, default='act/checkpoints', help="Logs directory for TensorBoard stats and policy demo gifs.")
     parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
     parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
     parser.add_argument("--num_epochs", type=int, default=100000, help="Number of epochs to train for.")

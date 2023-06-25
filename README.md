@@ -71,11 +71,11 @@ To train ACT:
 
     # UPGM R2D2 data
     python3 act/imitate_episodes.py \
-    --log_dir /iris/u/moojink/upgm/act/checkpoints \
+    --log_dir act/checkpoints \
     --policy_class ACT --kl_weight 10 --chunk_size 15 --hidden_dim 512 --batch_size 64 --dim_feedforward 3200 \
     --num_epochs 20000  --lr 1e-5 \
     --seed 0 \
-    --data_dir=/iris/u/moojink/upgm/R2D2/data_1_2023-04-26_128-demos-5-objects,R2D2/data_2_2023-05-02_50-demos-red-cube-fixed-robot-pose,R2D2/data_3_2023-05-02_50-demos-blue-and-white-milk-carton-fixed-robot-pose,R2D2/data_4_2023-05-03_56-demos-2-objects,R2D2/data_5_2023-05-10_76-demos-3-objects,R2D2/data_6_2023-05-14_136-demos-5-objects,R2D2/data_7_2023-05-15_152-demos-5-objects
+    --data_dir=R2D2/data_1_2023-04-26_128-demos-5-objects,R2D2/data_2_2023-05-02_50-demos-red-cube-fixed-robot-pose,R2D2/data_3_2023-05-02_50-demos-blue-and-white-milk-carton-fixed-robot-pose,R2D2/data_4_2023-05-03_56-demos-2-objects,R2D2/data_5_2023-05-10_76-demos-3-objects,R2D2/data_6_2023-05-14_136-demos-5-objects,R2D2/data_7_2023-05-15_152-demos-5-objects
 
 Add ``--checkpoint_dir`` and ``--checkpoint_epoch`` to load a checkpoint. Add ``--load_optimizer=True`` if you want to load the optimizer state.
 
