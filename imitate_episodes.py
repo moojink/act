@@ -45,6 +45,7 @@ def main(args):
     checkpoint_dir = args['checkpoint_dir']
     checkpoint_epoch = args['checkpoint_epoch']
     load_optimizer = args['load_optimizer']
+    img_size = args['img_size']
 
     # get task parameters
     if not is_eval:
@@ -110,7 +111,7 @@ def main(args):
         print()
         exit()
 
-    train_dataloader, val_dataloader, stats = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val)
+    train_dataloader, val_dataloader, stats = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size)
 
     # save dataset stats
     stats_path = os.path.join(log_dir, f'dataset_stats.pkl')
@@ -476,5 +477,7 @@ if __name__ == '__main__':
                         help="The epoch number at which to resume training. If 0, start fresh.")
     parser.add_argument("--load_optimizer", type=str_to_bool, default=False,
                         help="(Only applicable when loading checkpoint) Whether to load the previously saved optimizer state.")
+    parser.add_argument("--img_size", type=int, default=256,
+                        help="Size of (square) image observations.")
     
     main(vars(parser.parse_args()))

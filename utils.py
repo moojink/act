@@ -11,12 +11,13 @@ import IPython
 e = IPython.embed
 
 class EpisodicDataset(torch.utils.data.Dataset):
-    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats):
+    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, img_size):
         super(EpisodicDataset).__init__()
         self.episode_ids = episode_ids
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names
         self.norm_stats = norm_stats
+        self.img_size = img_size
         # For UPGM R2D2:
         self.mp4_filepaths = get_mp4_filepaths(data_dir=self.dataset_dir, cam_serial_num=self.camera_names[0]) # list of paths to the demonstration videos
         self.traj_hdf5_filepaths = get_traj_hdf5_filepaths(data_dir=self.dataset_dir) # list of paths to the `trajectory.h5` files containing action labels
@@ -27,7 +28,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         # Read an image from disk.
-        hdf5_filepath = os.path.join(self.mp4_filepaths[index].split('/MP4')[0], 'images.hdf5')
+        hdf5_filepath = os.path.join(self.mp4_filepaths[index].split('/MP4')[0], f'images.hdf5') # TODO: f'images_{img_size}px.hdf5'?
         with h5py.File(hdf5_filepath, 'r') as f:
             episode_length = f['images'].shape[0]
             step_index = np.random.randint(0, episode_length)
@@ -80,7 +81,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
 class EpisodicDatasetMemory(torch.utils.data.Dataset):
     """Data loader that loads the whole dataset into memory."""
-    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats):
+    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, img_size):
         super(EpisodicDatasetMemory).__init__()
         self.episode_ids = episode_ids
         self.dataset_dir = dataset_dir
@@ -91,7 +92,7 @@ class EpisodicDatasetMemory(torch.utils.data.Dataset):
         traj_hdf5_filepaths = get_traj_hdf5_filepaths(data_dir=self.dataset_dir) # list of paths to the `trajectory.h5` files containing action labels
         self.max_episode_length = 300 # hardcoded; the policy requires all sampled actions to have the same length
         # Read everything from disk into memory.
-        self.images_dict = get_images_dict(mp4_filepaths)
+        self.images_dict = get_images_dict(mp4_filepaths, img_size)
         self.actions_and_target_labels_dict = get_actions_and_target_labels_dict(traj_hdf5_filepaths)
         # self.actions_dict = get_actions_dict(traj_hdf5_filepaths)
         # self.target_labels_dict = get_target_labels_dict(traj_hdf5_filepaths)
@@ -201,7 +202,7 @@ def get_norm_stats(dataset_dir, num_episodes):
     return stats
 
 
-def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val):
+def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size):
     print(f'\nData from: {dataset_dir}\n')
     # obtain train test split
     train_ratio = 0.9
@@ -213,9 +214,9 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     norm_stats = get_norm_stats(dataset_dir, num_episodes)
 
     # construct dataset and dataloader
-    train_dataset = EpisodicDatasetMemory(train_indices, dataset_dir, camera_names, norm_stats)
+    train_dataset = EpisodicDatasetMemory(train_indices, dataset_dir, camera_names, norm_stats, img_size)
     train_dataset = AugmentedExpertedDataset(train_dataset)
-    val_dataset = EpisodicDatasetMemory(val_indices, dataset_dir, camera_names, norm_stats)
+    val_dataset = EpisodicDatasetMemory(val_indices, dataset_dir, camera_names, norm_stats, img_size)
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True)
 

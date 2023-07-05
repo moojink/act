@@ -73,6 +73,8 @@ def get_args_parser():
                         help="The epoch number at which to resume training. If 0, start fresh.")
     parser.add_argument("--load_optimizer", type=str_to_bool, default=False,
                         help="(Only applicable when loading checkpoint) Whether to load the previously saved optimizer state.")
+    parser.add_argument("--img_size", type=int, default=256,
+                        help="Size of (square) image observations.")
     return parser
 
 
