@@ -202,7 +202,7 @@ def get_norm_stats(dataset_dir, num_episodes):
     return stats
 
 
-def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size):
+def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size, apply_aug):
     print(f'\nData from: {dataset_dir}\n')
     # obtain train test split
     train_ratio = 0.9
@@ -215,7 +215,8 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
 
     # construct dataset and dataloader
     train_dataset = EpisodicDatasetMemory(train_indices, dataset_dir, camera_names, norm_stats, img_size)
-    train_dataset = AugmentedExpertedDataset(train_dataset)
+    if apply_aug:
+        train_dataset = AugmentedExpertedDataset(train_dataset)
     val_dataset = EpisodicDatasetMemory(val_indices, dataset_dir, camera_names, norm_stats, img_size)
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True)

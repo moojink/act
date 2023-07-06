@@ -75,6 +75,10 @@ def get_args_parser():
                         help="(Only applicable when loading checkpoint) Whether to load the previously saved optimizer state.")
     parser.add_argument("--img_size", type=int, default=256,
                         help="Size of (square) image observations.")
+    parser.add_argument("--image_encoder", type=str, default='resnet18', choices=['resnet18', 'resnet34', 'resnet50'],
+                        help="Which image encoder to use for the BC policy.")
+    parser.add_argument("--apply_aug", type=str_to_bool, default=True,
+                        help="Whether to apply data augmentations on the training set (e.g., random crop).")
     return parser
 
 

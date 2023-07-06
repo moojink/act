@@ -10,6 +10,8 @@ import torchvision
 from torch import nn
 from torchvision.models._utils import IntermediateLayerGetter
 from typing import Dict, List
+from torchvision.models import efficientnet_b3, EfficientNet_B3_Weights, resnet18, ResNet18_Weights, resnet34, ResNet34_Weights, resnet50, ResNet50_Weights
+from upgm.models.film_efficientnet import film_efficientnet_b3
 
 from util.misc import NestedTensor, is_main_process
 
@@ -71,17 +73,6 @@ class BackboneBase(nn.Module):
         self.body = IntermediateLayerGetter(backbone, return_layers=return_layers)
         self.num_channels = num_channels
 
-    def forward(self, tensor):
-        xs = self.body(tensor)
-        return xs
-        # out: Dict[str, NestedTensor] = {}
-        # for name, x in xs.items():
-        #     m = tensor_list.mask
-        #     assert m is not None
-        #     mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0]
-        #     out[name] = NestedTensor(x, mask)
-        # return out
-
 
 class Backbone(BackboneBase):
     """ResNet backbone with frozen BatchNorm."""
@@ -89,11 +80,37 @@ class Backbone(BackboneBase):
                  train_backbone: bool,
                  return_interm_layers: bool,
                  dilation: bool):
-        backbone = getattr(torchvision.models, name)(
-            replace_stride_with_dilation=[False, False, dilation],
-            pretrained=is_main_process(), norm_layer=FrozenBatchNorm2d) # pretrained # TODO do we want frozen batch_norm??
-        num_channels = 512 if name in ('resnet18', 'resnet34') else 2048
+        # Load pretrained weights.
+        if name == 'resnet18':
+            weights = ResNet18_Weights.DEFAULT
+            num_channels = 512
+        elif name == 'resnet34':
+            weights = ResNet34_Weights.DEFAULT
+            num_channels = 512
+        elif name == 'resnet50':
+            weights = ResNet50_Weights.DEFAULT
+            num_channels = 2048
+        elif name == 'efficientnet_b3':
+            weights = EfficientNet_B3_Weights.DEFAULT
+            num_channels = 1536
+        else:
+            raise ValueError
+        # Initialize pretrained model.
+        if 'resnet' in name:
+            backbone = getattr(torchvision.models, name)(
+                replace_stride_with_dilation=[False, False, dilation],
+                weights=weights, norm_layer=FrozenBatchNorm2d) # pretrained # TODO do we want frozen batch_norm??
+        else: # efficientnet
+            backbone = getattr(torchvision.models, name)(
+                weights=weights, norm_layer=FrozenBatchNorm2d) # pretrained # TODO do we want frozen batch_norm??
         super().__init__(backbone, train_backbone, num_channels, return_interm_layers)
+        # Get image preprocessing function.
+        self.preprocess = weights.transforms()
+
+    def forward(self, tensor):
+        tensor = self.preprocess(tensor)
+        xs = self.body(tensor)
+        return xs
 
 
 class Joiner(nn.Sequential):

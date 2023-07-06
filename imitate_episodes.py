@@ -1,5 +1,6 @@
 import cv2
 import imageio
+import json
 import torch
 import time
 import numpy as np
@@ -46,6 +47,8 @@ def main(args):
     checkpoint_epoch = args['checkpoint_epoch']
     load_optimizer = args['load_optimizer']
     img_size = args['img_size']
+    image_encoder = args['image_encoder']
+    apply_aug = args['apply_aug']
 
     # get task parameters
     if not is_eval:
@@ -58,7 +61,7 @@ def main(args):
     # fixed parameters
     state_dim = 7 # this is like the action dim
     lr_backbone = 1e-5
-    backbone = 'resnet18'
+    backbone = image_encoder
     if policy_class == 'ACT':
         enc_layers = 4
         dec_layers = 7
@@ -97,6 +100,7 @@ def main(args):
         'checkpoint_dir': checkpoint_dir,
         'checkpoint_epoch': checkpoint_epoch,
         'load_optimizer': load_optimizer,
+        'kl_weight': args['kl_weight'],
     }
 
     if is_eval:
@@ -111,12 +115,16 @@ def main(args):
         print()
         exit()
 
-    train_dataloader, val_dataloader, stats = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size)
+    train_dataloader, val_dataloader, stats = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size, apply_aug)
 
     # save dataset stats
     stats_path = os.path.join(log_dir, f'dataset_stats.pkl')
     with open(stats_path, 'wb') as f:
         pickle.dump(stats, f)
+
+    # Save a json file with the bc_args used for this run (for reference).
+    with open(os.path.join(log_dir, 'bc_args.json'), 'w') as f:
+        json.dump(args, f, indent=2)
 
     best_ckpt_info = train_bc(train_dataloader, val_dataloader, config)
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
@@ -368,13 +376,19 @@ def train_bc(train_dataloader, val_dataloader, config):
             validation_history.append(epoch_summary)
 
             epoch_val_loss = epoch_summary['loss']
+            epoch_val_loss_l1 = epoch_summary['l1']
+            epoch_val_loss_kl = epoch_summary['kl'] * config['kl_weight']
             if epoch_val_loss < min_val_loss:
                 min_val_loss = epoch_val_loss
                 best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
         elapsed_time = time.time() - start_time
         print(f'Val loss:   {epoch_val_loss:.5f}')
+        print(f'Val loss (L1):   {epoch_val_loss_l1:.5f}')
+        print(f'Val loss (KL):   {epoch_val_loss_kl:.5f}')
         print(f'Seconds per epoch (val):   {elapsed_time:.5f}')
         tb_writer.add_scalar(f'loss (val)', epoch_val_loss, epoch)
+        tb_writer.add_scalar(f'loss L1 (val)', epoch_val_loss_l1, epoch)
+        tb_writer.add_scalar(f'loss KL (val)', epoch_val_loss_kl, epoch)
         tb_writer.add_scalar(f'sec/epoch (val)', elapsed_time, epoch)
         summary_string = ''
         for k, v in epoch_summary.items():
@@ -398,9 +412,15 @@ def train_bc(train_dataloader, val_dataloader, config):
         epoch_summary = compute_dict_mean(epoch_dicts)
         train_history.append(epoch_summary)
         epoch_train_loss = epoch_summary['loss']
+        epoch_train_loss_l1 = epoch_summary['l1']
+        epoch_train_loss_kl = epoch_summary['kl'] * config['kl_weight']
         print(f'Train loss: {epoch_train_loss:.5f}')
+        print(f'Train loss (L1): {epoch_train_loss_l1:.5f}')
+        print(f'Train loss (KL): {epoch_train_loss_kl:.5f}')
         print(f'Seconds per epoch (train):   {elapsed_time:.5f}')
         tb_writer.add_scalar(f'loss (train)', epoch_train_loss, epoch)
+        tb_writer.add_scalar(f'loss L1 (train)', epoch_train_loss_l1, epoch)
+        tb_writer.add_scalar(f'loss KL (train)', epoch_train_loss_kl, epoch)
         tb_writer.add_scalar(f'sec/epoch (train)', elapsed_time, epoch)
         summary_string = ''
         for k, v in epoch_summary.items():
@@ -479,5 +499,9 @@ if __name__ == '__main__':
                         help="(Only applicable when loading checkpoint) Whether to load the previously saved optimizer state.")
     parser.add_argument("--img_size", type=int, default=256,
                         help="Size of (square) image observations.")
+    parser.add_argument("--image_encoder", type=str, default='resnet18', choices=['resnet18', 'resnet34', 'resnet50'],
+                        help="Which image encoder to use for the BC policy.")
+    parser.add_argument("--apply_aug", type=str_to_bool, default=True,
+                        help="Whether to apply data augmentations on the training set (e.g., random crop).")
     
     main(vars(parser.parse_args()))
