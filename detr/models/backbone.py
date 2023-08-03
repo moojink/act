@@ -7,6 +7,7 @@ from collections import OrderedDict
 import torch
 import torch.nn.functional as F
 import torchvision
+import torchvision.transforms as transforms
 from torch import nn
 from torchvision.models._utils import IntermediateLayerGetter
 from typing import Dict, List
@@ -105,7 +106,10 @@ class Backbone(BackboneBase):
                 weights=weights, norm_layer=FrozenBatchNorm2d) # pretrained # TODO do we want frozen batch_norm??
         super().__init__(backbone, train_backbone, num_channels, return_interm_layers)
         # Get image preprocessing function.
-        self.preprocess = weights.transforms()
+        self.preprocess = weights.transforms() # Use this to preprocess images the same way as the pretrained model (e.g., ResNet-18).
+        # self.preprocess = transforms.Compose([ # Use this if you don't want to resize images to 224x224.
+        #     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        # ])
 
     def forward(self, tensor):
         tensor = self.preprocess(tensor)

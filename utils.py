@@ -4,8 +4,8 @@ import os
 import h5py
 import random
 import torchvision.transforms as transforms
-from torch.utils.data import TensorDataset, DataLoader
-from upgm.utils.data_utils import get_actions_and_target_labels_dict, get_actions_dict, get_images_dict, get_mp4_filepaths, get_target_labels_dict, get_traj_hdf5_filepaths
+from torch.utils.data import ConcatDataset, TensorDataset, DataLoader
+from upgm.utils.data_utils import get_actions_and_target_labels_dict, get_actions_dict, get_images_dict, get_mp4_filepaths, get_spartn_traj_hdf5_filepaths, get_target_labels_dict, get_traj_hdf5_filepaths
 
 import IPython
 e = IPython.embed
@@ -19,7 +19,6 @@ class EpisodicDataset(torch.utils.data.Dataset):
         self.norm_stats = norm_stats
         self.img_size = img_size
         # For UPGM R2D2:
-        self.mp4_filepaths = get_mp4_filepaths(data_dir=self.dataset_dir, cam_serial_num=self.camera_names[0]) # list of paths to the demonstration videos
         self.traj_hdf5_filepaths = get_traj_hdf5_filepaths(data_dir=self.dataset_dir) # list of paths to the `trajectory.h5` files containing action labels
         self.max_episode_length = 300 # hardcoded; the policy requires all sampled actions to have the same length
 
@@ -28,8 +27,8 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         # Read an image from disk.
-        hdf5_filepath = os.path.join(self.mp4_filepaths[index].split('/MP4')[0], f'images.hdf5') # TODO: f'images_{img_size}px.hdf5'?
-        with h5py.File(hdf5_filepath, 'r') as f:
+        images_hdf5_filepath = os.path.join(self.traj_hdf5_filepaths[index].split('/trajectory.h5')[0], 'recordings', f'images_{self.img_size}px.h5')
+        with h5py.File(images_hdf5_filepath, 'r') as f:
             episode_length = f['images'].shape[0]
             step_index = np.random.randint(0, episode_length)
             image = f['images'][step_index] # shape: (H, W, 3)
@@ -142,7 +141,7 @@ class EpisodicDatasetMemory(torch.utils.data.Dataset):
 
 class AugmentedExpertedDataset(torch.utils.data.Dataset):
     """
-    Apply data augmentation transformations to a Dataset.
+    Apply standard data augmentation transformations to a Dataset.
 
     Arguments:
         dataset (Dataset): A Dataset that returns (sample, target).
@@ -169,6 +168,85 @@ class AugmentedExpertedDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         return self.transform(*self.dataset.__getitem__(idx))
+
+
+class SPARTNDataset(torch.utils.data.Dataset):
+    """
+    Dataset for SPARTN augmentations.
+
+    Arguments:
+        dataset (Dataset): A Dataset that returns (sample, target).
+    """
+    def __init__(self, dataset_dir, camera_names, norm_stats, img_size):
+        super(EpisodicDataset).__init__()
+        self.dataset_dir = dataset_dir
+        self.camera_names = camera_names
+        self.norm_stats = norm_stats
+        self.img_size = img_size
+        # For UPGM R2D2:
+        self.spartn_traj_hdf5_filepaths = get_spartn_traj_hdf5_filepaths(data_dir=self.dataset_dir, img_size=img_size) # list of paths to the `nerf_trajectory.h5` files containing action labels
+        self.max_episode_length = 300 # hardcoded; the policy requires all sampled actions to have the same length
+
+    def __len__(self):
+        return len(self.spartn_traj_hdf5_filepaths)
+
+    def __getitem__(self, index):
+        # Read a NeRF-augmented image from disk.
+        images_hdf5_filepath = os.path.join(self.spartn_traj_hdf5_filepaths[index].split('/nerf_trajectory.h5')[0], f'nerf_images_{self.img_size}px.h5')
+        with h5py.File(images_hdf5_filepath, 'r') as f:
+            aug_factor = f.attrs['aug_factor'] # number of SPARTN augmentations per timestep
+            aug_start_buffer = f.attrs['aug_start_buffer'] # how many timesteps in the beginning of the original episode that were ignored (not augmented via SPARTN)
+            aug_index = np.random.randint(0, aug_factor) # index between 0 and aug_index
+            aug_traj_len = f[f'images{aug_index}'].shape[0] # length of the partial trajectory that was augmented via SPARTN
+            aug_step_index = np.random.randint(0, aug_traj_len) # timestep index between 0 and the length of the augmented trajectory
+            image = f[f'images{aug_index}'][aug_step_index] # shape: (H, W, 3)
+            image_dict = dict()
+            image_dict[self.camera_names[0]] = image
+        # Read action labels from disk. For the first timestep in the sequence, extract the action from the SPARTN corrective action
+        # augmentations, but for the rest of the chunk, extract the actions from the original actions. This is because we want
+        # the chunk of actions to be coherent; if we instead took a contiguous sequence of actions from the SPARTN augmentations,
+        # we would have a chunk of incoherent actions corresponding to the randomly perturbed poses.
+        with h5py.File(self.spartn_traj_hdf5_filepaths[index], 'r') as f:
+            # Read action labels from disk. Get the actions at step_index.
+            aug_action = np.append(f['action'][f'cartesian_velocity{aug_index}'][aug_step_index], f['action'][f'gripper_action{aug_index}'][aug_step_index]) # shape: (num_steps_after_index, action_dim)
+            aug_action = aug_action.astype('float32') # Cast from float64 to float32. The loss of precision is negligible for our purposes.
+        orig_traj_hdf5_path = os.path.join(self.spartn_traj_hdf5_filepaths[index].split(f'/nerf_{self.img_size}px')[0], 'trajectory.h5')
+        step_index = aug_start_buffer + aug_step_index # offset index based on the SPARTN aug start buffer so that aug and orig timesteps align
+        with h5py.File(orig_traj_hdf5_path, 'r') as f:
+            # Read action labels from disk. Get all actions after the step_index.
+            orig_action = np.concatenate((f['action']['cartesian_velocity'][step_index+1:], np.expand_dims(f['action']['gripper_action'][step_index+1:], axis=1)), axis=1) # shape: (num_steps_after_index, action_dim)
+            orig_action = orig_action.astype('float32') # Cast from float64 to float32. The loss of precision is negligible for our purposes.
+            # Read a text annotation (e.g., 'small red cube') from disk.
+            target_label = f.attrs['current_task']
+            # Hard-coding joint positions/velocities as zeros since we don't use them as inputs in UPGM.
+            qpos = np.zeros((7,))
+            episode_length = f['action']['cartesian_velocity'].shape[0]
+            action_length = episode_length - step_index
+            padded_action_shape = (self.max_episode_length, f['action']['cartesian_velocity'].shape[1] + 1) # +1 on second shape dim for gripper action
+        # Create padded actions tensor and is_pad bool tensors because they're required by the Transformer policy.
+        padded_action = np.zeros(padded_action_shape, dtype=np.float32)
+        action = np.concatenate((np.expand_dims(aug_action, axis=0), orig_action), axis=0)
+        padded_action[:action_length] = action
+        is_pad = np.zeros(self.max_episode_length)
+        is_pad[action_length:] = 1
+        # new axis for different cameras
+        # For UPGM, we only have 1 camera (the wrist camera).
+        all_cam_images = []
+        for cam_name in self.camera_names:
+            all_cam_images.append(image_dict[cam_name])
+        all_cam_images = np.stack(all_cam_images, axis=0)
+        # construct observations
+        image_data = torch.from_numpy(all_cam_images)
+        qpos_data = torch.from_numpy(qpos).float()
+        action_data = torch.from_numpy(padded_action).float()
+        is_pad = torch.from_numpy(is_pad).bool()
+        # channel last
+        image_data = torch.einsum('k h w c -> k c h w', image_data) # This is just a way to transpose the tensor. k == # cameras == 1 in UPGM R2D2.
+        # normalize image and change dtype to float
+        image_data = image_data / 255.0
+        action_data = (action_data - self.norm_stats["action_mean"]) / self.norm_stats["action_std"]
+        qpos_data = (qpos_data - self.norm_stats["qpos_mean"]) / self.norm_stats["qpos_std"]
+        return image_data, qpos_data, action_data, is_pad, target_label
 
 
 def get_norm_stats(dataset_dir, num_episodes):
@@ -202,7 +280,7 @@ def get_norm_stats(dataset_dir, num_episodes):
     return stats
 
 
-def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size, apply_aug):
+def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size, apply_aug, spartn):
     print(f'\nData from: {dataset_dir}\n')
     # obtain train test split
     train_ratio = 0.9
@@ -214,12 +292,19 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     norm_stats = get_norm_stats(dataset_dir, num_episodes)
 
     # construct dataset and dataloader
-    train_dataset = EpisodicDatasetMemory(train_indices, dataset_dir, camera_names, norm_stats, img_size)
+    train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats, img_size)
     if apply_aug:
         train_dataset = AugmentedExpertedDataset(train_dataset)
-    val_dataset = EpisodicDatasetMemory(val_indices, dataset_dir, camera_names, norm_stats, img_size)
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True)
+    if spartn:
+        spartn_dataset = SPARTNDataset(dataset_dir, camera_names, norm_stats, img_size)
+        # If using SPARTN, sample from the normal training dataset and NeRF augmentations with 50% probability each.
+        train_weights = len(train_dataset) * [1.0 / len(train_dataset)]
+        train_weights = [0.5 * x for x in train_weights] # original dataset weights
+        train_weights.extend(len(spartn_dataset) * [0.5 / len(spartn_dataset)]) # SPARTN augmentations dataset weights
+        train_dataset = ConcatDataset([train_dataset, spartn_dataset])
+    val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats, img_size)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=16)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=16)
 
     return train_dataloader, val_dataloader, norm_stats
 

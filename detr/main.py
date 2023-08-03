@@ -79,6 +79,8 @@ def get_args_parser():
                         help="Which image encoder to use for the BC policy.")
     parser.add_argument("--apply_aug", type=str_to_bool, default=True,
                         help="Whether to apply data augmentations on the training set (e.g., random crop).")
+    parser.add_argument("--spartn", type=str_to_bool, default=False,
+                        help="Whether to use SPARTN data augmentations on the training set.")
     return parser
 
 

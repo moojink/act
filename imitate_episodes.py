@@ -49,6 +49,7 @@ def main(args):
     img_size = args['img_size']
     image_encoder = args['image_encoder']
     apply_aug = args['apply_aug']
+    spartn = args['spartn']
 
     # get task parameters
     if not is_eval:
@@ -115,7 +116,7 @@ def main(args):
         print()
         exit()
 
-    train_dataloader, val_dataloader, stats = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size, apply_aug)
+    train_dataloader, val_dataloader, stats = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size, apply_aug, spartn)
 
     # save dataset stats
     stats_path = os.path.join(log_dir, f'dataset_stats.pkl')
@@ -435,7 +436,7 @@ def train_bc(train_dataloader, val_dataloader, config):
     checkpoint_path = os.path.join(log_dir, f'policy_epoch_{epoch_end}_seed_{seed}.ckpt')
     torch.save(policy.state_dict(), checkpoint_path)
     optimizer_state_path = os.path.join(log_dir, f'optimizer_epoch_{epoch_end}_seed_{seed}.ckpt')
-    torch.save(optimizer.state_dict(), checkpoint_path)
+    torch.save(optimizer.state_dict(), optimizer_state_path)
 
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
     checkpoint_path = os.path.join(log_dir, f'policy_epoch_{best_epoch}_seed_{seed}.ckpt')
@@ -502,6 +503,8 @@ if __name__ == '__main__':
     parser.add_argument("--image_encoder", type=str, default='resnet18', choices=['resnet18', 'resnet34', 'resnet50'],
                         help="Which image encoder to use for the BC policy.")
     parser.add_argument("--apply_aug", type=str_to_bool, default=True,
-                        help="Whether to apply data augmentations on the training set (e.g., random crop).")
+                        help="Whether to use standard data augmentations on the training set (e.g., random crop).")
+    parser.add_argument("--spartn", type=str_to_bool, default=False,
+                        help="Whether to use SPARTN data augmentations on the training set.")
     
     main(vars(parser.parse_args()))
