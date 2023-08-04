@@ -81,6 +81,8 @@ def get_args_parser():
                         help="Whether to apply data augmentations on the training set (e.g., random crop).")
     parser.add_argument("--spartn", type=str_to_bool, default=False,
                         help="Whether to use SPARTN data augmentations on the training set.")
+    parser.add_argument("--use_ram", type=str_to_bool, default=False,
+                        help="Whether to load all training data into memory instead of reading from disk (for small datasets).")
     return parser
 
 

@@ -280,7 +280,7 @@ def get_norm_stats(dataset_dir, num_episodes):
     return stats
 
 
-def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size, apply_aug, spartn):
+def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size, apply_aug, spartn, use_ram):
     print(f'\nData from: {dataset_dir}\n')
     # obtain train test split
     train_ratio = 0.9
@@ -292,7 +292,7 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     norm_stats = get_norm_stats(dataset_dir, num_episodes)
 
     # construct dataset and dataloader
-    train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats, img_size)
+    train_dataset = EpisodicDatasetMemory(train_indices, dataset_dir, camera_names, norm_stats, img_size) if use_ram else EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats, img_size)
     if apply_aug:
         train_dataset = AugmentedExpertedDataset(train_dataset)
     if spartn:
@@ -302,9 +302,10 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
         train_weights = [0.5 * x for x in train_weights] # original dataset weights
         train_weights.extend(len(spartn_dataset) * [0.5 / len(spartn_dataset)]) # SPARTN augmentations dataset weights
         train_dataset = ConcatDataset([train_dataset, spartn_dataset])
-    val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats, img_size)
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=16)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=16)
+    val_dataset = EpisodicDatasetMemory(val_indices, dataset_dir, camera_names, norm_stats, img_size) if use_ram else EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats, img_size)
+    num_workers = 0 if use_ram else os.cpu_count()
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=num_workers)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=num_workers)
 
     return train_dataloader, val_dataloader, norm_stats
 

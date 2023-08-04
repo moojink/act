@@ -50,6 +50,7 @@ def main(args):
     image_encoder = args['image_encoder']
     apply_aug = args['apply_aug']
     spartn = args['spartn']
+    use_ram = args['use_ram']
 
     # get task parameters
     if not is_eval:
@@ -116,7 +117,7 @@ def main(args):
         print()
         exit()
 
-    train_dataloader, val_dataloader, stats = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size, apply_aug, spartn)
+    train_dataloader, val_dataloader, stats = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size, apply_aug, spartn, use_ram)
 
     # save dataset stats
     stats_path = os.path.join(log_dir, f'dataset_stats.pkl')
@@ -334,6 +335,8 @@ def train_bc(train_dataloader, val_dataloader, config):
     checkpoint_epoch = config['checkpoint_epoch']
     load_optimizer = config['load_optimizer']
 
+    print('\nLogging to directory {log_dir}\n')
+
     set_seed(seed)
 
     policy = make_policy(policy_class, policy_config)
@@ -506,5 +509,7 @@ if __name__ == '__main__':
                         help="Whether to use standard data augmentations on the training set (e.g., random crop).")
     parser.add_argument("--spartn", type=str_to_bool, default=False,
                         help="Whether to use SPARTN data augmentations on the training set.")
-    
+    parser.add_argument("--use_ram", type=str_to_bool, default=False,
+                        help="Whether to load all training data into memory instead of reading from disk (for small datasets).")
+
     main(vars(parser.parse_args()))
