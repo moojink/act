@@ -51,6 +51,7 @@ def main(args):
     apply_aug = args['apply_aug']
     spartn = args['spartn']
     use_ram = args['use_ram']
+    checkpoint_epoch_offset = args['checkpoint_epoch_offset']
 
     # get task parameters
     if not is_eval:
@@ -103,6 +104,7 @@ def main(args):
         'checkpoint_epoch': checkpoint_epoch,
         'load_optimizer': load_optimizer,
         'kl_weight': args['kl_weight'],
+        'checkpoint_epoch_offset': checkpoint_epoch_offset,
     }
 
     if is_eval:
@@ -334,8 +336,9 @@ def train_bc(train_dataloader, val_dataloader, config):
     checkpoint_dir = config['checkpoint_dir']
     checkpoint_epoch = config['checkpoint_epoch']
     load_optimizer = config['load_optimizer']
+    checkpoint_epoch_offset = config['checkpoint_epoch_offset']
 
-    print('\nLogging to directory {log_dir}\n')
+    print(f'\nLogging to directory {log_dir}\n')
 
     set_seed(seed)
 
@@ -360,10 +363,11 @@ def train_bc(train_dataloader, val_dataloader, config):
     min_val_loss = np.inf
     best_ckpt_info = None
 
-    # Set start and end epoch numbers (offset them if loading checkpoint).
+    # Offset start and end epoch numbers if args.checkpoint_epoch_offset==True so that we start where we
+    # left off in the previous training run.
     epoch_start = 1
     epoch_end = num_epochs
-    if checkpoint_epoch != '':
+    if checkpoint_epoch != '' and checkpoint_epoch_offset==True:
         epoch_start = int(checkpoint_epoch) + 1
         epoch_end += int(checkpoint_epoch)
     for epoch in tqdm(range(epoch_start, epoch_end + 1)):
@@ -511,5 +515,7 @@ if __name__ == '__main__':
                         help="Whether to use SPARTN data augmentations on the training set.")
     parser.add_argument("--use_ram", type=str_to_bool, default=False,
                         help="Whether to load all training data into memory instead of reading from disk (for small datasets).")
+    parser.add_argument("--checkpoint_epoch_offset", type=str_to_bool, default=False,
+                        help="(Only applicable when loading checkpoint) If True, the starting epoch number is 0. Else, we start where the previous checkpoint finished.")
 
     main(vars(parser.parse_args()))

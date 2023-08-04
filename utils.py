@@ -89,7 +89,7 @@ class EpisodicDatasetMemory(torch.utils.data.Dataset):
         # For UPGM R2D2:
         mp4_filepaths = get_mp4_filepaths(data_dir=self.dataset_dir, cam_serial_num=self.camera_names[0]) # list of paths to the demonstration videos
         traj_hdf5_filepaths = get_traj_hdf5_filepaths(data_dir=self.dataset_dir) # list of paths to the `trajectory.h5` files containing action labels
-        self.max_episode_length = 300 # hardcoded; the policy requires all sampled actions to have the same length
+        self.max_episode_length = 1000 # hardcoded; the policy requires all sampled actions to have the same length
         # Read everything from disk into memory.
         self.images_dict = get_images_dict(mp4_filepaths, img_size)
         self.actions_and_target_labels_dict = get_actions_and_target_labels_dict(traj_hdf5_filepaths)
@@ -185,7 +185,7 @@ class SPARTNDataset(torch.utils.data.Dataset):
         self.img_size = img_size
         # For UPGM R2D2:
         self.spartn_traj_hdf5_filepaths = get_spartn_traj_hdf5_filepaths(data_dir=self.dataset_dir, img_size=img_size) # list of paths to the `nerf_trajectory.h5` files containing action labels
-        self.max_episode_length = 300 # hardcoded; the policy requires all sampled actions to have the same length
+        self.max_episode_length = 1000 # hardcoded; the policy requires all sampled actions to have the same length
 
     def __len__(self):
         return len(self.spartn_traj_hdf5_filepaths)

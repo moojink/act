@@ -83,6 +83,9 @@ def get_args_parser():
                         help="Whether to use SPARTN data augmentations on the training set.")
     parser.add_argument("--use_ram", type=str_to_bool, default=False,
                         help="Whether to load all training data into memory instead of reading from disk (for small datasets).")
+    parser.add_argument("--checkpoint_epoch_offset", type=str_to_bool, default=False,
+                        help="(Only applicable when loading checkpoint) If True, the starting epoch number is 0. Else, we start where the previous checkpoint finished.")
+
     return parser
 
 
