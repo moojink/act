@@ -303,7 +303,7 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
         train_weights.extend(len(spartn_dataset) * [0.5 / len(spartn_dataset)]) # SPARTN augmentations dataset weights
         train_dataset = ConcatDataset([train_dataset, spartn_dataset])
     val_dataset = EpisodicDatasetMemory(val_indices, dataset_dir, camera_names, norm_stats, img_size) if use_ram else EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats, img_size)
-    num_workers = 0 if use_ram else os.cpu_count()
+    num_workers = 0 if use_ram else len(os.sched_getaffinity(0)) # num CPU cores available to current training job -- do NOT use os.cpu_count()! -- source: https://stackoverflow.com/a/55423170
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=num_workers)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=num_workers)
 

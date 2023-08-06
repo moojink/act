@@ -31,6 +31,8 @@ e = IPython.embed
 
 np.set_printoptions(formatter={'float': lambda x: "{0:0.3f}".format(x)})
 
+TB_WRITER_INTERVAL = 100 # we write to the TensorBoard events log file once per interval
+
 def main(args):
     set_seed(1)
     # command line parameters
@@ -394,10 +396,11 @@ def train_bc(train_dataloader, val_dataloader, config):
         print(f'Val loss (L1):   {epoch_val_loss_l1:.5f}')
         print(f'Val loss (KL):   {epoch_val_loss_kl:.5f}')
         print(f'Seconds per epoch (val):   {elapsed_time:.5f}')
-        tb_writer.add_scalar(f'loss (val)', epoch_val_loss, epoch)
-        tb_writer.add_scalar(f'loss L1 (val)', epoch_val_loss_l1, epoch)
-        tb_writer.add_scalar(f'loss KL (val)', epoch_val_loss_kl, epoch)
-        tb_writer.add_scalar(f'sec/epoch (val)', elapsed_time, epoch)
+        if 0 <= epoch <= 1 or epoch % TB_WRITER_INTERVAL == 0:
+            tb_writer.add_scalar(f'loss (val)', epoch_val_loss, epoch)
+            tb_writer.add_scalar(f'loss L1 (val)', epoch_val_loss_l1, epoch)
+            tb_writer.add_scalar(f'loss KL (val)', epoch_val_loss_kl, epoch)
+            tb_writer.add_scalar(f'sec/epoch (val)', elapsed_time, epoch)
         summary_string = ''
         for k, v in epoch_summary.items():
             summary_string += f'{k}: {v.item():.3f} '
@@ -426,10 +429,11 @@ def train_bc(train_dataloader, val_dataloader, config):
         print(f'Train loss (L1): {epoch_train_loss_l1:.5f}')
         print(f'Train loss (KL): {epoch_train_loss_kl:.5f}')
         print(f'Seconds per epoch (train):   {elapsed_time:.5f}')
-        tb_writer.add_scalar(f'loss (train)', epoch_train_loss, epoch)
-        tb_writer.add_scalar(f'loss L1 (train)', epoch_train_loss_l1, epoch)
-        tb_writer.add_scalar(f'loss KL (train)', epoch_train_loss_kl, epoch)
-        tb_writer.add_scalar(f'sec/epoch (train)', elapsed_time, epoch)
+        if 0 <= epoch <= 1 or epoch % TB_WRITER_INTERVAL == 0:
+            tb_writer.add_scalar(f'loss (train)', epoch_train_loss, epoch)
+            tb_writer.add_scalar(f'loss L1 (train)', epoch_train_loss_l1, epoch)
+            tb_writer.add_scalar(f'loss KL (train)', epoch_train_loss_kl, epoch)
+            tb_writer.add_scalar(f'sec/epoch (train)', elapsed_time, epoch)
         summary_string = ''
         for k, v in epoch_summary.items():
             summary_string += f'{k}: {v.item():.3f} '
@@ -485,7 +489,7 @@ if __name__ == '__main__':
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size per gradient step.")
     parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
     parser.add_argument("--num_epochs", type=int, default=100000, help="Number of epochs to train for.")
-    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate.")
+    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate.")
 
     # for ACT
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
@@ -509,7 +513,7 @@ if __name__ == '__main__':
                         help="Size of (square) image observations.")
     parser.add_argument("--image_encoder", type=str, default='resnet18', choices=['resnet18', 'resnet34', 'resnet50'],
                         help="Which image encoder to use for the BC policy.")
-    parser.add_argument("--apply_aug", type=str_to_bool, default=True,
+    parser.add_argument("--apply_aug", type=str_to_bool, default=False,
                         help="Whether to use standard data augmentations on the training set (e.g., random crop).")
     parser.add_argument("--spartn", type=str_to_bool, default=False,
                         help="Whether to use SPARTN data augmentations on the training set.")
