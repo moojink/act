@@ -283,7 +283,7 @@ def get_norm_stats(dataset_dir, num_episodes):
 
 
 def load_data(dataset_dir, num_episodes, camera_names, batch_size, img_size, apply_aug, spartn, use_ram):
-    print(f'\nData from: {dataset_dir}\n')
+    print(f'\Loading data from: {dataset_dir}\n')
     # obtain train test split
     train_ratio = 0.9
     shuffled_indices = np.random.permutation(num_episodes)
@@ -306,9 +306,10 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size, img_size, app
         train_dataset = ConcatDataset([train_dataset, spartn_dataset])
     val_dataset = EpisodicDatasetMemory(val_indices, dataset_dir, camera_names, norm_stats, img_size) if use_ram else EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats, img_size)
     num_workers = 0 if use_ram else len(os.sched_getaffinity(0)) # num CPU cores available to current training job -- do NOT use os.cpu_count()! -- source: https://stackoverflow.com/a/55423170
+    print(f'Number of dataloader workers: {num_workers}')
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=num_workers)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=num_workers)
-
+    print('Finished preparing dataloders.')
     return train_dataloader, val_dataloader, norm_stats
 
 

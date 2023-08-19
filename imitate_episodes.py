@@ -99,7 +99,7 @@ def make_policy(policy_class, policy_config):
     if policy_class == 'ACT':
         policy = ACTPolicy(policy_config)
         num_total_params = sum(p.numel() for p in policy.parameters())
-        print(f'Total # parameters: {num_total_params}\n')
+        print(f'Total # parameters: {num_total_params}')
         num_trainable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
         print(f'# trainable parameters: {num_trainable_params}\n')
     elif policy_class == 'CNNMLP':
@@ -291,9 +291,9 @@ def train_bc(train_dataloader, val_dataloader, args, policy_config):
     # Load checkpoint if applicable.
     if args.checkpoint_epoch != '':
         checkpoint_path = os.path.join(args.checkpoint_dir, f'policy_epoch_{args.checkpoint_epoch}_seed_{args.seed}.ckpt')
-        checkpoint = torch.load(args.checkpoint_path)
+        checkpoint = torch.load(checkpoint_path)
         policy.load_state_dict(checkpoint)
-        print(f'Loaded checkpoint from {args.checkpoint_path}')
+        print(f'Loaded checkpoint from {checkpoint_path}')
         # Load optimizer state if applicable.
         if args.load_optimizer:
             optimizer_state_path = os.path.join(args.checkpoint_dir, f'optimizer_epoch_{args.checkpoint_epoch}_seed_{args.seed}.ckpt')
