@@ -91,8 +91,10 @@ class EpisodicDatasetMemory(torch.utils.data.Dataset):
         traj_hdf5_filepaths = get_traj_hdf5_filepaths(data_dir=self.dataset_dir) # list of paths to the `trajectory.h5` files containing action labels
         self.max_episode_length = 1000 # hardcoded; the policy requires all sampled actions to have the same length
         # Read everything from disk into memory.
+        print('Loading data into memory...')
         self.images_dict = get_images_dict(mp4_filepaths, img_size)
         self.actions_and_target_labels_dict = get_actions_and_target_labels_dict(traj_hdf5_filepaths)
+        print('Finished loading data.')
         # self.actions_dict = get_actions_dict(traj_hdf5_filepaths)
         # self.target_labels_dict = get_target_labels_dict(traj_hdf5_filepaths)
 
@@ -280,7 +282,7 @@ def get_norm_stats(dataset_dir, num_episodes):
     return stats
 
 
-def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size, apply_aug, spartn, use_ram):
+def load_data(dataset_dir, num_episodes, camera_names, batch_size, img_size, apply_aug, spartn, use_ram):
     print(f'\nData from: {dataset_dir}\n')
     # obtain train test split
     train_ratio = 0.9
@@ -304,8 +306,8 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
         train_dataset = ConcatDataset([train_dataset, spartn_dataset])
     val_dataset = EpisodicDatasetMemory(val_indices, dataset_dir, camera_names, norm_stats, img_size) if use_ram else EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats, img_size)
     num_workers = 0 if use_ram else len(os.sched_getaffinity(0)) # num CPU cores available to current training job -- do NOT use os.cpu_count()! -- source: https://stackoverflow.com/a/55423170
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=num_workers)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=num_workers)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=num_workers)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=num_workers)
 
     return train_dataloader, val_dataloader, norm_stats
 

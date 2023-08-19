@@ -85,6 +85,10 @@ def get_args_parser():
                         help="Whether to load all training data into memory instead of reading from disk (for small datasets).")
     parser.add_argument("--checkpoint_epoch_offset", type=str_to_bool, default=False,
                         help="(Only applicable when loading checkpoint) If True, the starting epoch number is 0. Else, we start where the previous checkpoint finished.")
+    parser.add_argument("--tb_writer_interval", type=int, default=100,
+                        help="We write to TensorBoard once per `tb_writer_interval` steps.")
+    parser.add_argument("--debug", type=str_to_bool, default=False,
+                        help="Whether to enable debugging mode.")
 
     return parser
 

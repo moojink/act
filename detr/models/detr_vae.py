@@ -236,6 +236,8 @@ def build_encoder(args):
 
 def build_sentence_encoder():
     sentence_encoder, _ = clip.load("ViT-L/14@336px", device='cuda') # ViT-L/14@336px has highest performance among CLIP models; embedding size == 768
+    for param in sentence_encoder.parameters():
+        param.requires_grad = False
     return sentence_encoder
 
 def build(args):

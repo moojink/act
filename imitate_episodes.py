@@ -31,97 +31,50 @@ e = IPython.embed
 
 np.set_printoptions(formatter={'float': lambda x: "{0:0.3f}".format(x)})
 
-TB_WRITER_INTERVAL = 100 # we write to the TensorBoard events log file once per interval
 
 def main(args):
     set_seed(1)
     # command line parameters
-    is_eval = args['eval']
-    log_dir = args['log_dir']
+    is_eval = args.eval
+    log_dir = args.log_dir
     if not is_eval:
         log_dir = update_log_dir(log_dir)
-    policy_class = args['policy_class']
-    onscreen_render = args['onscreen_render']
-    batch_size_train = args['batch_size']
-    batch_size_val = args['batch_size']
-    num_epochs = args['num_epochs']
-    checkpoint_dir = args['checkpoint_dir']
-    checkpoint_epoch = args['checkpoint_epoch']
-    load_optimizer = args['load_optimizer']
-    img_size = args['img_size']
-    image_encoder = args['image_encoder']
-    apply_aug = args['apply_aug']
-    spartn = args['spartn']
-    use_ram = args['use_ram']
-    checkpoint_epoch_offset = args['checkpoint_epoch_offset']
 
     # get task parameters
     if not is_eval:
-        dataset_dir = args['data_dir']
-        mp4_filepaths = get_mp4_filepaths(data_dir=dataset_dir, cam_serial_num=args['cam_serial_num']) # list of paths to the demonstration videos
+        dataset_dir = args.data_dir
+        mp4_filepaths = get_mp4_filepaths(data_dir=dataset_dir, cam_serial_num=args.cam_serial_num) # list of paths to the demonstration videos
         num_episodes = len(mp4_filepaths)
     episode_len = 100
-    camera_names = [args['cam_serial_num']]
+    camera_names = [args.cam_serial_num]
 
     # fixed parameters
     state_dim = 7 # this is like the action dim
     lr_backbone = 1e-5
-    backbone = image_encoder
-    if policy_class == 'ACT':
-        enc_layers = 4
-        dec_layers = 7
-        nheads = 8
-        policy_config = {'lr': args['lr'],
-                         'num_queries': args['chunk_size'],
-                         'kl_weight': args['kl_weight'],
-                         'hidden_dim': args['hidden_dim'],
-                         'dim_feedforward': args['dim_feedforward'],
+    if args.policy_class == 'ACT':
+        policy_config = {'lr': args.lr,
+                         'num_queries': args.chunk_size,
+                         'kl_weight': args.kl_weight,
+                         'hidden_dim': args.hidden_dim,
+                         'dim_feedforward': args.dim_feedforward,
                          'lr_backbone': lr_backbone,
-                         'backbone': backbone,
-                         'enc_layers': enc_layers,
-                         'dec_layers': dec_layers,
-                         'nheads': nheads,
+                         'backbone': args.image_encoder,
+                         'enc_layers': args.enc_layers,
+                         'dec_layers': args.dec_layers,
+                         'nheads': args.nheads,
                          'camera_names': camera_names,
                          }
     elif policy_class == 'CNNMLP':
-        policy_config = {'lr': args['lr'], 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
+        policy_config = {'lr': args.lr, 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
                          'camera_names': camera_names,}
     else:
         raise NotImplementedError
 
-    config = {
-        'num_epochs': num_epochs,
-        'log_dir': log_dir,
-        'episode_len': episode_len,
-        'state_dim': state_dim,
-        'lr': args['lr'],
-        'policy_class': policy_class,
-        'onscreen_render': onscreen_render,
-        'policy_config': policy_config,
-        'seed': args['seed'],
-        'temporal_agg': args['temporal_agg'],
-        'camera_names': camera_names,
-        'real_robot': True,
-        'checkpoint_dir': checkpoint_dir,
-        'checkpoint_epoch': checkpoint_epoch,
-        'load_optimizer': load_optimizer,
-        'kl_weight': args['kl_weight'],
-        'checkpoint_epoch_offset': checkpoint_epoch_offset,
-    }
-
     if is_eval:
-        ckpt_names = [f'policy_best.ckpt']
-        results = []
-        for ckpt_name in ckpt_names:
-            success_rate, avg_return = eval_bc(config, ckpt_name, save_episode=True)
-            results.append([ckpt_name, success_rate, avg_return])
-
-        for ckpt_name, success_rate, avg_return in results:
-            print(f'{ckpt_name}: {success_rate=} {avg_return=}')
-        print()
+        success_rate, avg_return = eval_bc(args, policy_config, save_episode=True)
         exit()
 
-    train_dataloader, val_dataloader, stats = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, img_size, apply_aug, spartn, use_ram)
+    train_dataloader, val_dataloader, stats = load_data(dataset_dir, num_episodes, camera_names, args.batch_size, args.img_size, args.apply_aug, args.spartn, args.use_ram)
 
     # save dataset stats
     stats_path = os.path.join(log_dir, f'dataset_stats.pkl')
@@ -130,20 +83,25 @@ def main(args):
 
     # Save a json file with the bc_args used for this run (for reference).
     with open(os.path.join(log_dir, 'bc_args.json'), 'w') as f:
-        json.dump(args, f, indent=2)
+        json.dump(args.__dict__, f, indent=2)
 
-    best_ckpt_info = train_bc(train_dataloader, val_dataloader, config)
+    best_ckpt_info = train_bc(train_dataloader, val_dataloader, args, policy_config)
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
 
     # save best checkpoint
-    checkpoint_path = os.path.join(log_dir, f'policy_best.ckpt')
-    torch.save(best_state_dict, checkpoint_path)
-    print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
+    if not args.debug:
+        checkpoint_path = os.path.join(log_dir, f'policy_best.ckpt')
+        torch.save(best_state_dict, checkpoint_path)
+        print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
 
 
 def make_policy(policy_class, policy_config):
     if policy_class == 'ACT':
         policy = ACTPolicy(policy_config)
+        num_total_params = sum(p.numel() for p in policy.parameters())
+        print(f'Total # parameters: {num_total_params}\n')
+        num_trainable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
+        print(f'# trainable parameters: {num_trainable_params}\n')
     elif policy_class == 'CNNMLP':
         policy = CNNMLPPolicy(policy_config)
     else:
@@ -183,28 +141,19 @@ def save_rollout_gif(img_list):
     imageio.mimwrite(rollout_path, img_list, duration=duration_in_milliseconds, loop=True)
     print(f'Saved rollout GIF at path {rollout_path}')
 
-def eval_bc(config, ckpt_name, save_episode=True):
-    seed = config['seed']
-    set_seed(seed)
-    checkpoint_dir = config['checkpoint_dir']
-    checkpoint_epoch = config['checkpoint_epoch']
-    state_dim = config['state_dim']
-    real_robot = True
-    policy_class = config['policy_class']
-    policy_config = config['policy_config']
-    camera_names = config['camera_names']
-    max_timesteps = 300
-    temporal_agg = config['temporal_agg']
+def eval_bc(args, policy_config, save_episode=True):
+    set_seed(args.seed)
+    max_timesteps = 600
 
     # load policy and stats
-    checkpoint_path = os.path.join(checkpoint_dir, f'policy_epoch_{checkpoint_epoch}_seed_{seed}.ckpt')
-    policy = make_policy(policy_class, policy_config)
+    checkpoint_path = os.path.join(args.checkpoint_dir, f'policy_epoch_{args.checkpoint_epoch}_seed_{args.seed}.ckpt')
+    policy = make_policy(args.policy_class, policy_config)
     loading_status = policy.load_state_dict(torch.load(checkpoint_path))
     print(loading_status)
     policy.cuda()
     policy.eval()
     print(f'Loaded: {checkpoint_path}')
-    stats_path = os.path.join(checkpoint_dir, f'dataset_stats.pkl')
+    stats_path = os.path.join(args.checkpoint_dir, f'dataset_stats.pkl')
     with open(stats_path, 'rb') as f:
         stats = pickle.load(f)
 
@@ -265,7 +214,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
                     # normalize image and change dtype to float
                     image = image / 255.0
                     ### query policy
-                    if config['policy_class'] == "ACT":
+                    if args.policy_class == "ACT":
                         if t % query_frequency == 0:
                             all_actions = policy(qpos, image, target_label=target_label)
                         if temporal_agg:
@@ -280,7 +229,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
                             raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
                         else:
                             raw_action = all_actions[:, t % query_frequency]
-                    elif config['policy_class'] == "CNNMLP":
+                    elif args.policy_class == "CNNMLP":
                         raw_action = policy(qpos, image, target_label=target_label)
                     else:
                         raise NotImplementedError
@@ -328,35 +277,26 @@ def update_log_dir(log_dir):
     return log_dir
 
 
-def train_bc(train_dataloader, val_dataloader, config):
-    num_epochs = config['num_epochs']
-    log_dir = config['log_dir']
-    seed = config['seed']
-    policy_class = config['policy_class']
-    policy_config = config['policy_config']
-    tb_writer = SummaryWriter(log_dir=log_dir)
-    checkpoint_dir = config['checkpoint_dir']
-    checkpoint_epoch = config['checkpoint_epoch']
-    load_optimizer = config['load_optimizer']
-    checkpoint_epoch_offset = config['checkpoint_epoch_offset']
+def train_bc(train_dataloader, val_dataloader, args, policy_config):
+    tb_writer = SummaryWriter(log_dir=args.log_dir)
 
-    print(f'\nLogging to directory {log_dir}\n')
+    print(f'\nLogging to directory {args.log_dir}\n')
 
-    set_seed(seed)
+    set_seed(args.seed)
 
-    policy = make_policy(policy_class, policy_config)
+    policy = make_policy(args.policy_class, policy_config)
     policy.cuda()
-    optimizer = make_optimizer(policy_class, policy)
+    optimizer = make_optimizer(args.policy_class, policy)
 
     # Load checkpoint if applicable.
-    if checkpoint_epoch != '':
-        checkpoint_path = os.path.join(checkpoint_dir, f'policy_epoch_{checkpoint_epoch}_seed_{seed}.ckpt')
-        checkpoint = torch.load(checkpoint_path)
+    if args.checkpoint_epoch != '':
+        checkpoint_path = os.path.join(args.checkpoint_dir, f'policy_epoch_{args.checkpoint_epoch}_seed_{args.seed}.ckpt')
+        checkpoint = torch.load(args.checkpoint_path)
         policy.load_state_dict(checkpoint)
-        print(f'Loaded checkpoint from {checkpoint_path}')
+        print(f'Loaded checkpoint from {args.checkpoint_path}')
         # Load optimizer state if applicable.
-        if load_optimizer:
-            optimizer_state_path = os.path.join(checkpoint_dir, f'optimizer_epoch_{checkpoint_epoch}_seed_{seed}.ckpt')
+        if args.load_optimizer:
+            optimizer_state_path = os.path.join(args.checkpoint_dir, f'optimizer_epoch_{args.checkpoint_epoch}_seed_{args.seed}.ckpt')
             optimizer_state = torch.load(optimizer_state_path)
             optimizer.load_state_dict(optimizer_state)
 
@@ -368,10 +308,10 @@ def train_bc(train_dataloader, val_dataloader, config):
     # Offset start and end epoch numbers if args.checkpoint_epoch_offset==True so that we start where we
     # left off in the previous training run.
     epoch_start = 1
-    epoch_end = num_epochs
-    if checkpoint_epoch != '' and checkpoint_epoch_offset==True:
-        epoch_start = int(checkpoint_epoch) + 1
-        epoch_end += int(checkpoint_epoch)
+    epoch_end = args.num_epochs
+    if args.checkpoint_epoch != '' and args.checkpoint_epoch_offset==True:
+        epoch_start = int(args.checkpoint_epoch) + 1
+        epoch_end += int(args.checkpoint_epoch)
     for epoch in tqdm(range(epoch_start, epoch_end + 1)):
         print(f'\nEpoch {epoch}')
         # validation
@@ -387,7 +327,7 @@ def train_bc(train_dataloader, val_dataloader, config):
 
             epoch_val_loss = epoch_summary['loss']
             epoch_val_loss_l1 = epoch_summary['l1']
-            epoch_val_loss_kl = epoch_summary['kl'] * config['kl_weight']
+            epoch_val_loss_kl = epoch_summary['kl'] * args.kl_weight
             if epoch_val_loss < min_val_loss:
                 min_val_loss = epoch_val_loss
                 best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
@@ -396,7 +336,7 @@ def train_bc(train_dataloader, val_dataloader, config):
         print(f'Val loss (L1):   {epoch_val_loss_l1:.5f}')
         print(f'Val loss (KL):   {epoch_val_loss_kl:.5f}')
         print(f'Seconds per epoch (val):   {elapsed_time:.5f}')
-        if 0 <= epoch <= 1 or epoch % TB_WRITER_INTERVAL == 0:
+        if 0 <= epoch <= 1 or epoch % args.tb_writer_interval == 0:
             tb_writer.add_scalar(f'loss (val)', epoch_val_loss, epoch)
             tb_writer.add_scalar(f'loss L1 (val)', epoch_val_loss_l1, epoch)
             tb_writer.add_scalar(f'loss KL (val)', epoch_val_loss_kl, epoch)
@@ -424,12 +364,12 @@ def train_bc(train_dataloader, val_dataloader, config):
         train_history.append(epoch_summary)
         epoch_train_loss = epoch_summary['loss']
         epoch_train_loss_l1 = epoch_summary['l1']
-        epoch_train_loss_kl = epoch_summary['kl'] * config['kl_weight']
+        epoch_train_loss_kl = epoch_summary['kl'] * args.kl_weight
         print(f'Train loss: {epoch_train_loss:.5f}')
         print(f'Train loss (L1): {epoch_train_loss_l1:.5f}')
         print(f'Train loss (KL): {epoch_train_loss_kl:.5f}')
         print(f'Seconds per epoch (train):   {elapsed_time:.5f}')
-        if 0 <= epoch <= 1 or epoch % TB_WRITER_INTERVAL == 0:
+        if 0 <= epoch <= 1 or epoch % args.tb_writer_interval == 0:
             tb_writer.add_scalar(f'loss (train)', epoch_train_loss, epoch)
             tb_writer.add_scalar(f'loss L1 (train)', epoch_train_loss_l1, epoch)
             tb_writer.add_scalar(f'loss KL (train)', epoch_train_loss_kl, epoch)
@@ -439,20 +379,20 @@ def train_bc(train_dataloader, val_dataloader, config):
             summary_string += f'{k}: {v.item():.3f} '
         print(summary_string)
 
-        if epoch % int(num_epochs / 10) == 0:
-            checkpoint_path = os.path.join(log_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
+        if epoch % int(args.num_epochs / 10) == 0 and not args.debug:
+            checkpoint_path = os.path.join(args.log_dir, f'policy_epoch_{epoch}_seed_{args.seed}.ckpt')
             torch.save(policy.state_dict(), checkpoint_path)
 
     # Save final epoch checkpoint with optimizer state as well so that we can later resume training from where we left off.
-    checkpoint_path = os.path.join(log_dir, f'policy_epoch_{epoch_end}_seed_{seed}.ckpt')
-    torch.save(policy.state_dict(), checkpoint_path)
-    optimizer_state_path = os.path.join(log_dir, f'optimizer_epoch_{epoch_end}_seed_{seed}.ckpt')
-    torch.save(optimizer.state_dict(), optimizer_state_path)
+    if not args.debug:
+        checkpoint_path = os.path.join(args.log_dir, f'policy_epoch_{epoch_end}_seed_{args.seed}.ckpt')
+        torch.save(policy.state_dict(), checkpoint_path)
+        optimizer_state_path = os.path.join(args.log_dir, f'optimizer_epoch_{epoch_end}_seed_{args.seed}.ckpt')
+        torch.save(optimizer.state_dict(), optimizer_state_path)
 
-    best_epoch, min_val_loss, best_state_dict = best_ckpt_info
-    checkpoint_path = os.path.join(log_dir, f'policy_epoch_{best_epoch}_seed_{seed}.ckpt')
-    torch.save(best_state_dict, checkpoint_path)
-    print(f'Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at epoch {best_epoch}')
+        best_epoch, min_val_loss, best_state_dict = best_ckpt_info
+        checkpoint_path = os.path.join(args.log_dir, f'policy_epoch_{best_epoch}_seed_{args.seed}.ckpt')
+        torch.save(best_state_dict, checkpoint_path)
 
     return best_ckpt_info
 
@@ -496,6 +436,9 @@ if __name__ == '__main__':
     parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
     parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
     parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
+    parser.add_argument('--enc_layers', action='store', type=int, help='enc_layers', default=4)
+    parser.add_argument('--dec_layers', action='store', type=int, help='dec_layers', default=7)
+    parser.add_argument('--nheads', action='store', type=int, help='nheads', default=8)
     parser.add_argument('--temporal_agg', action='store_true')
 
     # from UPGM R2D2
@@ -521,5 +464,10 @@ if __name__ == '__main__':
                         help="Whether to load all training data into memory instead of reading from disk (for small datasets).")
     parser.add_argument("--checkpoint_epoch_offset", type=str_to_bool, default=False,
                         help="(Only applicable when loading checkpoint) If True, the starting epoch number is 0. Else, we start where the previous checkpoint finished.")
+    parser.add_argument("--tb_writer_interval", type=int, default=100,
+                        help="We write to TensorBoard once per `tb_writer_interval` steps.")
+    parser.add_argument("--debug", type=str_to_bool, default=False,
+                        help="Whether to enable debugging mode.")
 
-    main(vars(parser.parse_args()))
+    args = parser.parse_args()
+    main(args)
