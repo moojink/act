@@ -36,9 +36,8 @@ def main(args):
     set_seed(1)
     # command line parameters
     is_eval = args.eval
-    log_dir = args.log_dir
     if not is_eval:
-        log_dir = update_log_dir(log_dir)
+        args.log_dir = update_log_dir(args.log_dir)
 
     # get task parameters
     if not is_eval:
@@ -77,12 +76,12 @@ def main(args):
     train_dataloader, val_dataloader, stats = load_data(dataset_dir, num_episodes, camera_names, args.batch_size, args.img_size, args.apply_aug, args.spartn, args.use_ram)
 
     # save dataset stats
-    stats_path = os.path.join(log_dir, f'dataset_stats.pkl')
+    stats_path = os.path.join(args.log_dir, f'dataset_stats.pkl')
     with open(stats_path, 'wb') as f:
         pickle.dump(stats, f)
 
     # Save a json file with the bc_args used for this run (for reference).
-    with open(os.path.join(log_dir, 'bc_args.json'), 'w') as f:
+    with open(os.path.join(args.log_dir, 'bc_args.json'), 'w') as f:
         json.dump(args.__dict__, f, indent=2)
 
     best_ckpt_info = train_bc(train_dataloader, val_dataloader, args, policy_config)
@@ -90,7 +89,7 @@ def main(args):
 
     # save best checkpoint
     if not args.debug:
-        checkpoint_path = os.path.join(log_dir, f'policy_best.ckpt')
+        checkpoint_path = os.path.join(args.log_dir, f'policy_best.ckpt')
         torch.save(best_state_dict, checkpoint_path)
         print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
 
