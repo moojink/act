@@ -49,14 +49,13 @@ def main(args):
 
     # fixed parameters
     state_dim = 7 # this is like the action dim
-    lr_backbone = 1e-5
     if args.policy_class == 'ACT':
         policy_config = {'lr': args.lr,
                          'num_queries': args.chunk_size,
                          'kl_weight': args.kl_weight,
                          'hidden_dim': args.hidden_dim,
                          'dim_feedforward': args.dim_feedforward,
-                         'lr_backbone': lr_backbone,
+                         'lr_backbone': args.lr,
                          'backbone': args.image_encoder,
                          'enc_layers': args.enc_layers,
                          'dec_layers': args.dec_layers,

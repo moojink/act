@@ -309,7 +309,8 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size, img_size, app
     print(f'Number of dataloader workers: {num_workers}')
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=num_workers)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=num_workers)
-    print('Finished preparing dataloders.')
+    print(f'\nNumber of episodes in training set: {len(train_dataset)}')
+    print(f'Number of episodes in validation set: {len(val_dataset)}')
     return train_dataloader, val_dataloader, norm_stats
 
 
