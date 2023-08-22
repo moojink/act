@@ -61,6 +61,7 @@ def main(args):
                          'dec_layers': args.dec_layers,
                          'nheads': args.nheads,
                          'camera_names': camera_names,
+                         'state_dim': state_dim,
                          }
     elif policy_class == 'CNNMLP':
         policy_config = {'lr': args.lr, 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
@@ -162,7 +163,7 @@ def eval_bc(args, policy_config, save_episode=True):
     env = RobotEnv(action_space='cartesian_velocity')
     env_max_reward = 0
     query_frequency = policy_config['num_queries']
-    if temporal_agg:
+    if args.temporal_agg:
         query_frequency = 1
         num_queries = policy_config['num_queries']
     target_label = ''
@@ -181,8 +182,8 @@ def eval_bc(args, policy_config, save_episode=True):
 
 
         ### evaluation loop
-        if temporal_agg:
-            all_time_actions = torch.zeros([max_timesteps, max_timesteps+num_queries, state_dim]).cuda()
+        if args.temporal_agg:
+            all_time_actions = torch.zeros([max_timesteps, max_timesteps+num_queries, policy_config['state_dim']]).cuda()
         qpos_history = torch.zeros((1, max_timesteps, 7)).cuda()
         image_list = [] # for visualization
         with torch.inference_mode():
@@ -194,7 +195,7 @@ def eval_bc(args, policy_config, save_episode=True):
                     ### process previous timestep to get qpos and image_list
                     # Get environment image observations.
                     obs_dict = env.get_observation()
-                    image = obs_dict['image'][camera_names[0]][:] # shape: (480, 640, 3)
+                    image = obs_dict['image'][policy_config['camera_names'][0]][:] # shape: (480, 640, 3)
                     image = image[:, 80:560, :] # shape: (480, 480, 3)
                     image = cv2.resize(image, (256, 256)) # shape: (256, 256, 3)
                     image_list.append(image)
@@ -215,7 +216,7 @@ def eval_bc(args, policy_config, save_episode=True):
                     if args.policy_class == "ACT":
                         if t % query_frequency == 0:
                             all_actions = policy(qpos, image, target_label=target_label)
-                        if temporal_agg:
+                        if args.temporal_agg:
                             all_time_actions[[t], t:t+num_queries] = all_actions
                             actions_for_curr_step = all_time_actions[:, t]
                             actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
