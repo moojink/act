@@ -3,6 +3,7 @@
 DETR model and criterion classes.
 """
 import clip
+import json
 import torch
 from torch import nn
 from torch.autograd import Variable
@@ -34,7 +35,7 @@ def get_sinusoid_encoding_table(n_position, d_hid):
 
 class DETRVAE(nn.Module):
     """ This is the DETR module that performs object detection """
-    def __init__(self, backbones, transformer, encoder, sentence_encoder, state_dim, num_queries, camera_names):
+    def __init__(self, backbones, transformer, encoder, sentence_encoder, state_dim, num_queries, camera_names, sentence_embeddings_path=None):
         """ Initializes the model.
         Parameters:
             backbones: torch module of the backbone to be used. See backbone.py
@@ -42,7 +43,8 @@ class DETRVAE(nn.Module):
             state_dim: robot state dimension of the environment
             num_queries: number of object queries, ie detection slot. This is the maximal number of objects
                          DETR can detect in a single image. For COCO, we recommend 100 queries.
-            aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
+            camera_names: Names of cameras used for data collection and training.
+            sentence_embeddings_path: (Optional) Path to frozen sentence embeddings.
         """
         super().__init__()
         self.num_queries = num_queries
@@ -50,6 +52,14 @@ class DETRVAE(nn.Module):
         self.transformer = transformer
         self.encoder = encoder # This is NOT the image encoder. This is the Transformer encoder. The image encoder is the `backbones` defined below.
         self.sentence_encoder = sentence_encoder # CLIP sentence encoder
+        self.sentence_embeddings_path = sentence_embeddings_path
+        if sentence_embeddings_path is not None:
+            # Load sentence embeddings into memory.
+            f = open(sentence_embeddings_path)
+            data = json.load(f)
+            for k in data:
+                data[k] = np.array(data[k], dtype=np.float32)
+            self.sentence_embeddings_dict = data
         hidden_dim = transformer.d_model
         self.sentence_encoder_proj = nn.Linear(768, hidden_dim) # project 768-d CLIP target_label embedding to 512-d Transformer embedding
         self.action_head = nn.Linear(hidden_dim, state_dim)
@@ -78,13 +88,27 @@ class DETRVAE(nn.Module):
         self.latent_out_proj = nn.Linear(self.latent_dim, hidden_dim) # project latent sample to embedding
         self.additional_pos_embed = nn.Embedding(3, hidden_dim) # learned position embedding for proprio, latent, and language embedding
 
+    def get_frozen_sentence_embeddings(self, target_label):
+        """
+        target_label: list (length = batch size) of strings
+        """
+        assert self.sentence_embeddings_path is not None, "Please load frozen pre-trained sentence embeddings for faster training."
+        def label_to_embedding(label):
+            return self.sentence_embeddings_dict[label]
+        sentence_embeddings = list(map(label_to_embedding, target_label)) # apply `label_to_embedding` function on all elements in list
+        sentence_embeddings = np.stack(sentence_embeddings) # (batch_size, D)
+        sentence_embeddings = torch.Tensor(sentence_embeddings)
+        sentence_embeddings = sentence_embeddings.to('cuda')
+        return sentence_embeddings
+
+
     def forward(self, qpos, image, env_state, actions=None, is_pad=None, target_label=None):
         """
         qpos: batch, qpos_dim
         image: batch, num_cam, channel, height, width
         env_state: None
         actions: batch, seq, action_dim
-        target_label: batch, max_char_len
+        target_label: list (length = batch size) of strings
         """
         is_training = actions is not None # train or val
         bs, _ = qpos.shape
@@ -132,11 +156,16 @@ class DETRVAE(nn.Module):
             # fold camera dimension into width dimension
             src = torch.cat(all_cam_features, axis=3)
             pos = torch.cat(all_cam_pos, axis=3)
-            # sentence encoder
-            with torch.no_grad():
-                tokens = clip.tokenize(target_label).to('cuda')
-                sentence_encoder_output = self.sentence_encoder.encode_text(tokens).float()
-            lang_input = self.sentence_encoder_proj(sentence_encoder_output)
+            # Sentence encoder
+            # - If we are training, load frozen sentence embeddings.
+            # - Else, do a forward pass through the sentence encoder.
+            if is_training:
+                sentence_embeddings = self.get_frozen_sentence_embeddings(target_label)
+            else:
+                with torch.no_grad():
+                    tokens = clip.tokenize(target_label).to('cuda')
+                    sentence_embeddings = self.sentence_encoder.encode_text(tokens).float()
+            lang_input = self.sentence_encoder_proj(sentence_embeddings)
             hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight, lang_input)[0]
         else:
             qpos = self.input_proj_robot_state(qpos)
@@ -263,6 +292,7 @@ def build(args):
         state_dim=state_dim,
         num_queries=args.num_queries,
         camera_names=args.camera_names,
+        sentence_embeddings_path=args.sentence_embeddings_path,
     )
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)

@@ -455,6 +455,8 @@ if __name__ == '__main__':
                         help="Size of (square) image observations.")
     parser.add_argument("--image_encoder", type=str, default='resnet18', choices=['resnet18', 'resnet34', 'resnet50'],
                         help="Which image encoder to use for the BC policy.")
+    parser.add_argument("--sentence_embeddings_path", type=str, default='R2D2/sentence_embeddings/sentence_embeddings_ViT-L-14@336px.json',
+                        help="Path to frozen sentence embeddings (optional, for faster training).")
     parser.add_argument("--apply_aug", type=str_to_bool, default=False,
                         help="Whether to use standard data augmentations on the training set (e.g., random crop).")
     parser.add_argument("--spartn", type=str_to_bool, default=False,
