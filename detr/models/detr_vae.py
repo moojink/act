@@ -51,15 +51,22 @@ class DETRVAE(nn.Module):
         self.camera_names = camera_names
         self.transformer = transformer
         self.encoder = encoder # This is NOT the image encoder. This is the Transformer encoder. The image encoder is the `backbones` defined below.
-        self.sentence_encoder = sentence_encoder # CLIP sentence encoder
-        self.sentence_embeddings_path = sentence_embeddings_path
-        if sentence_embeddings_path is not None:
-            # Load sentence embeddings into memory.
+        # At training time, we want to load frozen pre-trained sentence embeddings instead of running unnecessary forward passes
+        # through the large sentence encoder model -- since the target labels are fixed anyway. Therefore, there is no need to
+        # initialize the sentence encoder at all. We just need to load saved sentence embeddings.
+        # At test time, the user might enter an unseen target label, so we do need to run a forward pass through the sentence encoder.
+        if sentence_embeddings_path is not None: # train time
+            self.sentence_embeddings_path = sentence_embeddings_path
+            self.use_frozen_sentence_embeddings = True
+            # Load frozen pre-trained sentence embeddings into memory as a dict (key: target label, value: sentence embedding).
             f = open(sentence_embeddings_path)
             data = json.load(f)
             for k in data:
                 data[k] = np.array(data[k], dtype=np.float32)
             self.sentence_embeddings_dict = data
+        else: # test time
+            self.sentence_encoder = sentence_encoder
+            self.use_frozen_sentence_embeddings = False
         hidden_dim = transformer.d_model
         self.sentence_encoder_proj = nn.Linear(768, hidden_dim) # project 768-d CLIP target_label embedding to 512-d Transformer embedding
         self.action_head = nn.Linear(hidden_dim, state_dim)
@@ -90,9 +97,14 @@ class DETRVAE(nn.Module):
 
     def get_frozen_sentence_embeddings(self, target_label):
         """
-        target_label: list (length = batch size) of strings
+        Get the frozen pre-trained sentence embeddings for a list of target labels.
+
+        Args:
+            target_label: list (length = batch size) of strings
+        Returns:
+            Sentence embeddings with shape (batch_size, embed_size).
         """
-        assert self.sentence_embeddings_path is not None, "Please load frozen pre-trained sentence embeddings for faster training."
+        assert self.use_frozen_sentence_embeddings, "Error: Tried to retrieve frozen sentence embeddings, but self.use_frozen_sentence_embeddings == False."
         def label_to_embedding(label):
             return self.sentence_embeddings_dict[label]
         sentence_embeddings = list(map(label_to_embedding, target_label)) # apply `label_to_embedding` function on all elements in list
@@ -159,7 +171,7 @@ class DETRVAE(nn.Module):
             # Sentence encoder
             # - If we are training, load frozen sentence embeddings.
             # - Else, do a forward pass through the sentence encoder.
-            if is_training:
+            if self.use_frozen_sentence_embeddings:
                 sentence_embeddings = self.get_frozen_sentence_embeddings(target_label)
             else:
                 with torch.no_grad():
@@ -283,6 +295,10 @@ def build(args):
 
     encoder = build_encoder(args)
     sentence_encoder = build_sentence_encoder()
+
+    # Don't use frozen pre-trained sentence at test time, i.e., actually run a forward pass through the sentence encoder.
+    if args.eval:
+        args.sentence_embeddings_path = None
 
     model = DETRVAE(
         backbones,

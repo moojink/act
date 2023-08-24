@@ -35,12 +35,11 @@ np.set_printoptions(formatter={'float': lambda x: "{0:0.3f}".format(x)})
 def main(args):
     set_seed(1)
     # command line parameters
-    is_eval = args.eval
-    if not is_eval:
+    if not args.eval:
         args.log_dir = update_log_dir(args.log_dir)
 
     # get task parameters
-    if not is_eval:
+    if not args.eval:
         dataset_dir = args.data_dir
         mp4_filepaths = get_mp4_filepaths(data_dir=dataset_dir, cam_serial_num=args.cam_serial_num) # list of paths to the demonstration videos
         num_episodes = len(mp4_filepaths)
@@ -69,7 +68,7 @@ def main(args):
     else:
         raise NotImplementedError
 
-    if is_eval:
+    if args.eval:
         success_rate, avg_return = eval_bc(args, policy_config, save_episode=True)
         exit()
 
