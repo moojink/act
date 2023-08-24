@@ -431,7 +431,7 @@ if __name__ == '__main__':
     parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate.")
 
     # for ACT
-    parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
+    parser.add_argument('--kl_weight', action='store', type=float, help='KL Weight', required=False)
     parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
     parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
     parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
