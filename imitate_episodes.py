@@ -35,12 +35,11 @@ np.set_printoptions(formatter={'float': lambda x: "{0:0.3f}".format(x)})
 def main(args):
     set_seed(1)
     # command line parameters
-    is_eval = args.eval
-    if not is_eval:
+    if not args.eval:
         args.log_dir = update_log_dir(args.log_dir)
 
     # get task parameters
-    if not is_eval:
+    if not args.eval:
         dataset_dir = args.data_dir
         mp4_filepaths = get_mp4_filepaths(data_dir=dataset_dir, cam_serial_num=args.cam_serial_num) # list of paths to the demonstration videos
         num_episodes = len(mp4_filepaths)
@@ -69,7 +68,7 @@ def main(args):
     else:
         raise NotImplementedError
 
-    if is_eval:
+    if args.eval:
         success_rate, avg_return = eval_bc(args, policy_config, save_episode=True)
         exit()
 
@@ -431,7 +430,7 @@ if __name__ == '__main__':
     parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate.")
 
     # for ACT
-    parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
+    parser.add_argument('--kl_weight', action='store', type=float, help='KL Weight', required=False)
     parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
     parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
     parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
