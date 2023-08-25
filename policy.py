@@ -18,17 +18,26 @@ class ACTPolicy(nn.Module):
     def __call__(self, qpos, image, actions=None, is_pad=None, target_label=None):
         env_state = None
         if actions is not None: # training time
-            actions = actions[:, :self.model.num_queries]
-            is_pad = is_pad[:, :self.model.num_queries]
-
+            actions = actions[:, :self.model.num_queries] # (batch_size, seq_len, action_dim)
+            is_pad = is_pad[:, :self.model.num_queries] # (batch_size, seq_len)
             a_hat, is_pad_hat, (mu, logvar) = self.model(qpos, image, env_state, actions, is_pad, target_label)
             total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
             loss_dict = dict()
-            all_l1 = F.l1_loss(actions, a_hat, reduction='none')
-            l1 = (all_l1 * ~is_pad.unsqueeze(-1)).mean()
+            all_l1 = F.l1_loss(actions, a_hat, reduction='none') # (batch_size, seq_len, action_dim)
+            all_l1_dxyz = F.l1_loss(actions[:,:,:3], a_hat[:,:,:3], reduction='none') # (batch_size, seq_len, 3)
+            all_l1_dEuler = F.l1_loss(actions[:,:,3:6], a_hat[:,:,3:6], reduction='none') # (batch_size, seq_len, 3)
+            all_l1_dgrip = F.l1_loss(actions[:,:,6], a_hat[:,:,6], reduction='none').unsqueeze(-1) # (batch_size, seq_len, 1)
+            l1 = (all_l1 * ~is_pad.unsqueeze(-1)).mean() # scalar value
+            l1_dxyz = (all_l1_dxyz * ~is_pad.unsqueeze(-1)).mean() # scalar value
+            l1_dEuler = (all_l1_dEuler * ~is_pad.unsqueeze(-1)).mean() # scalar value
+            l1_dgrip = (all_l1_dgrip * ~is_pad.unsqueeze(-1)).mean() # scalar value
             loss_dict['l1'] = l1
+            loss_dict['l1_dxyz'] = l1_dxyz
+            loss_dict['l1_dEuler'] = l1_dEuler
+            loss_dict['l1_dgrip'] = l1_dgrip
             loss_dict['kl'] = total_kld[0]
             loss_dict['loss'] = loss_dict['l1'] + loss_dict['kl'] * self.kl_weight
+
             return loss_dict
         else: # inference time
             a_hat, _, (_, _) = self.model(qpos, image, env_state, target_label=target_label) # no action, sample from prior

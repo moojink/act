@@ -290,7 +290,7 @@ def train_bc(train_dataloader, val_dataloader, args, policy_config):
     if args.checkpoint_epoch != '':
         checkpoint_path = os.path.join(args.checkpoint_dir, f'policy_epoch_{args.checkpoint_epoch}_seed_{args.seed}.ckpt')
         checkpoint = torch.load(checkpoint_path)
-        policy.load_state_dict(checkpoint)
+        policy.load_state_dict(checkpoint, strict=False)
         print(f'Loaded checkpoint from {checkpoint_path}')
         # Load optimizer state if applicable.
         if args.load_optimizer:
@@ -325,6 +325,9 @@ def train_bc(train_dataloader, val_dataloader, args, policy_config):
 
             epoch_val_loss = epoch_summary['loss']
             epoch_val_loss_l1 = epoch_summary['l1']
+            epoch_val_loss_l1_dxyz = epoch_summary['l1_dxyz']
+            epoch_val_loss_l1_dEuler = epoch_summary['l1_dEuler']
+            epoch_val_loss_l1_dgrip = epoch_summary['l1_dgrip']
             epoch_val_loss_kl = epoch_summary['kl'] * args.kl_weight
             if epoch_val_loss < min_val_loss:
                 min_val_loss = epoch_val_loss
@@ -332,6 +335,9 @@ def train_bc(train_dataloader, val_dataloader, args, policy_config):
         elapsed_time = time.time() - start_time
         print(f'Val loss:   {epoch_val_loss:.5f}')
         print(f'Val loss (L1):   {epoch_val_loss_l1:.5f}')
+        print(f'Val loss_dxyz (L1):   {epoch_val_loss_l1_dxyz:.5f}')
+        print(f'Val loss_dEuler (L1):   {epoch_val_loss_l1_dEuler:.5f}')
+        print(f'Val loss_dgrip (L1):   {epoch_val_loss_l1_dgrip:.5f}')
         print(f'Val loss (KL):   {epoch_val_loss_kl:.5f}')
         print(f'Seconds per epoch (val):   {elapsed_time:.5f}')
         if 0 <= epoch <= 1 or epoch % args.tb_writer_interval == 0:
@@ -362,9 +368,15 @@ def train_bc(train_dataloader, val_dataloader, args, policy_config):
         train_history.append(epoch_summary)
         epoch_train_loss = epoch_summary['loss']
         epoch_train_loss_l1 = epoch_summary['l1']
+        epoch_train_loss_l1_dxyz = epoch_summary['l1_dxyz']
+        epoch_train_loss_l1_dEuler = epoch_summary['l1_dEuler']
+        epoch_train_loss_l1_dgrip = epoch_summary['l1_dgrip']
         epoch_train_loss_kl = epoch_summary['kl'] * args.kl_weight
         print(f'Train loss: {epoch_train_loss:.5f}')
         print(f'Train loss (L1): {epoch_train_loss_l1:.5f}')
+        print(f'Train loss_dxyz (L1): {epoch_train_loss_l1_dxyz:.5f}')
+        print(f'Train loss_dEuler (L1): {epoch_train_loss_l1_dEuler:.5f}')
+        print(f'Train loss_dgrip (L1): {epoch_train_loss_l1_dgrip:.5f}')
         print(f'Train loss (KL): {epoch_train_loss_kl:.5f}')
         print(f'Seconds per epoch (train):   {elapsed_time:.5f}')
         if 0 <= epoch <= 1 or epoch % args.tb_writer_interval == 0:
