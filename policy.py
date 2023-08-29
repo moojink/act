@@ -12,16 +12,13 @@ class ACTPolicy(nn.Module):
         model, optimizer = build_ACT_model_and_optimizer(args_override)
         self.model = model # CVAE decoder
         self.optimizer = optimizer
-        self.kl_weight = args_override['kl_weight']
-        print(f'KL Weight {self.kl_weight}')
 
     def __call__(self, qpos, image, actions=None, is_pad=None, target_label=None):
         env_state = None
         if actions is not None: # training time
             actions = actions[:, :self.model.num_queries] # (batch_size, seq_len, action_dim)
             is_pad = is_pad[:, :self.model.num_queries] # (batch_size, seq_len)
-            a_hat, is_pad_hat, (mu, logvar) = self.model(qpos, image, env_state, actions, is_pad, target_label)
-            total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
+            a_hat, is_pad_hat = self.model(qpos, image, env_state, actions, is_pad, target_label)
             loss_dict = dict()
             all_l1 = F.l1_loss(actions, a_hat, reduction='none') # (batch_size, seq_len, action_dim)
             all_l1_dxyz = F.l1_loss(actions[:,:,:3], a_hat[:,:,:3], reduction='none') # (batch_size, seq_len, 3)
@@ -35,8 +32,7 @@ class ACTPolicy(nn.Module):
             loss_dict['l1_dxyz'] = l1_dxyz
             loss_dict['l1_dEuler'] = l1_dEuler
             loss_dict['l1_dgrip'] = l1_dgrip
-            loss_dict['kl'] = total_kld[0]
-            loss_dict['loss'] = loss_dict['l1'] + loss_dict['kl'] * self.kl_weight
+            loss_dict['loss'] = loss_dict['l1']
 
             return loss_dict
         else: # inference time
@@ -70,18 +66,3 @@ class CNNMLPPolicy(nn.Module):
 
     def configure_optimizers(self):
         return self.optimizer
-
-def kl_divergence(mu, logvar):
-    batch_size = mu.size(0)
-    assert batch_size != 0
-    if mu.data.ndimension() == 4:
-        mu = mu.view(mu.size(0), mu.size(1))
-    if logvar.data.ndimension() == 4:
-        logvar = logvar.view(logvar.size(0), logvar.size(1))
-
-    klds = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
-    total_kld = klds.sum(1).mean(0, True)
-    dimension_wise_kld = klds.mean(0)
-    mean_kld = klds.mean(1).mean(0, True)
-
-    return total_kld, dimension_wise_kld, mean_kld

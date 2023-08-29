@@ -51,7 +51,6 @@ def main(args):
     if args.policy_class == 'ACT':
         policy_config = {'lr': args.lr,
                          'num_queries': args.chunk_size,
-                         'kl_weight': args.kl_weight,
                          'hidden_dim': args.hidden_dim,
                          'dim_feedforward': args.dim_feedforward,
                          'lr_backbone': args.lr,
@@ -289,7 +288,7 @@ def train_bc(train_dataloader, val_dataloader, args, policy_config):
     # Load checkpoint if applicable.
     if args.checkpoint_epoch != '':
         checkpoint_path = os.path.join(args.checkpoint_dir, f'policy_epoch_{args.checkpoint_epoch}_seed_{args.seed}.ckpt')
-        checkpoint = torch.load(checkpoint_path)
+        checkpoint = torch.load(checkpoint_path) # model.additional_pos_embed.weight
         policy.load_state_dict(checkpoint, strict=False)
         print(f'Loaded checkpoint from {checkpoint_path}')
         # Load optimizer state if applicable.
@@ -328,7 +327,6 @@ def train_bc(train_dataloader, val_dataloader, args, policy_config):
             epoch_val_loss_l1_dxyz = epoch_summary['l1_dxyz']
             epoch_val_loss_l1_dEuler = epoch_summary['l1_dEuler']
             epoch_val_loss_l1_dgrip = epoch_summary['l1_dgrip']
-            epoch_val_loss_kl = epoch_summary['kl'] * args.kl_weight
             if epoch_val_loss < min_val_loss:
                 min_val_loss = epoch_val_loss
                 best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
@@ -338,12 +336,10 @@ def train_bc(train_dataloader, val_dataloader, args, policy_config):
         print(f'Val loss_dxyz (L1):   {epoch_val_loss_l1_dxyz:.5f}')
         print(f'Val loss_dEuler (L1):   {epoch_val_loss_l1_dEuler:.5f}')
         print(f'Val loss_dgrip (L1):   {epoch_val_loss_l1_dgrip:.5f}')
-        print(f'Val loss (KL):   {epoch_val_loss_kl:.5f}')
         print(f'Seconds per epoch (val):   {elapsed_time:.5f}')
         if 0 <= epoch <= 1 or epoch % args.tb_writer_interval == 0:
             tb_writer.add_scalar(f'loss (val)', epoch_val_loss, epoch)
             tb_writer.add_scalar(f'loss L1 (val)', epoch_val_loss_l1, epoch)
-            tb_writer.add_scalar(f'loss KL (val)', epoch_val_loss_kl, epoch)
             tb_writer.add_scalar(f'sec/epoch (val)', elapsed_time, epoch)
         summary_string = ''
         for k, v in epoch_summary.items():
@@ -371,18 +367,15 @@ def train_bc(train_dataloader, val_dataloader, args, policy_config):
         epoch_train_loss_l1_dxyz = epoch_summary['l1_dxyz']
         epoch_train_loss_l1_dEuler = epoch_summary['l1_dEuler']
         epoch_train_loss_l1_dgrip = epoch_summary['l1_dgrip']
-        epoch_train_loss_kl = epoch_summary['kl'] * args.kl_weight
         print(f'Train loss: {epoch_train_loss:.5f}')
         print(f'Train loss (L1): {epoch_train_loss_l1:.5f}')
         print(f'Train loss_dxyz (L1): {epoch_train_loss_l1_dxyz:.5f}')
         print(f'Train loss_dEuler (L1): {epoch_train_loss_l1_dEuler:.5f}')
         print(f'Train loss_dgrip (L1): {epoch_train_loss_l1_dgrip:.5f}')
-        print(f'Train loss (KL): {epoch_train_loss_kl:.5f}')
         print(f'Seconds per epoch (train):   {elapsed_time:.5f}')
         if 0 <= epoch <= 1 or epoch % args.tb_writer_interval == 0:
             tb_writer.add_scalar(f'loss (train)', epoch_train_loss, epoch)
             tb_writer.add_scalar(f'loss L1 (train)', epoch_train_loss_l1, epoch)
-            tb_writer.add_scalar(f'loss KL (train)', epoch_train_loss_kl, epoch)
             tb_writer.add_scalar(f'sec/epoch (train)', elapsed_time, epoch)
         summary_string = ''
         for k, v in epoch_summary.items():
@@ -442,7 +435,6 @@ if __name__ == '__main__':
     parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate.")
 
     # for ACT
-    parser.add_argument('--kl_weight', action='store', type=float, help='KL Weight', required=False)
     parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
     parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
     parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
