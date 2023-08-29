@@ -50,7 +50,7 @@ class DETRVAE(nn.Module):
         self.num_queries = num_queries
         self.camera_names = camera_names
         self.transformer = transformer
-        self.encoder = encoder # This is NOT the image encoder. This is the Transformer encoder. The image encoder is the `backbones` defined below.
+        # self.encoder = encoder # This is NOT the image encoder. This is the Transformer encoder. The image encoder is the `backbones` defined below.
         # At training time, we want to load frozen pre-trained sentence embeddings instead of running unnecessary forward passes
         # through the large sentence encoder model -- since the target labels are fixed anyway. Therefore, there is no need to
         # initialize the sentence encoder at all. We just need to load saved sentence embeddings.
@@ -85,11 +85,11 @@ class DETRVAE(nn.Module):
 
         # encoder extra parameters
         self.latent_dim = 32 # final size of latent z # TODO tune
-        self.cls_embed = nn.Embedding(1, hidden_dim) # extra cls token embedding
-        self.encoder_action_proj = nn.Linear(7, hidden_dim) # project action to embedding
-        self.encoder_joint_proj = nn.Linear(7, hidden_dim)  # project qpos to embedding
-        self.latent_proj = nn.Linear(hidden_dim, self.latent_dim*2) # project hidden state to latent std, var
-        self.register_buffer('pos_table', get_sinusoid_encoding_table(1+1+num_queries, hidden_dim)) # [CLS], qpos, a_seq
+        # self.cls_embed = nn.Embedding(1, hidden_dim) # extra cls token embedding
+        # self.encoder_action_proj = nn.Linear(7, hidden_dim) # project action to embedding
+        # self.encoder_joint_proj = nn.Linear(7, hidden_dim)  # project qpos to embedding
+        # self.latent_proj = nn.Linear(hidden_dim, self.latent_dim*2) # project hidden state to latent std, var
+        # self.register_buffer('pos_table', get_sinusoid_encoding_table(1+1+num_queries, hidden_dim)) # [CLS], qpos, a_seq
 
         # decoder extra parameters
         self.latent_out_proj = nn.Linear(self.latent_dim, hidden_dim) # project latent sample to embedding
@@ -124,34 +124,17 @@ class DETRVAE(nn.Module):
         """
         is_training = actions is not None # train or val
         bs, _ = qpos.shape
-        ### Obtain latent z from action sequence
+        # Unlike the original ACT implementation, we set the style variable equal to zero
+        # so that it has no effect on policy learning. This is because I found empirically
+        # that the style variable ends up being 0 (and the KL term in the loss function
+        # also ends up being 0) during ACT training, and the method still performs well.
+        # Therefore it's better to just not train the style encoder, to speed up training.
         if is_training:
-            # project action sequence to embedding dim, and concat with a CLS token
-            action_embed = self.encoder_action_proj(actions) # (bs, seq, hidden_dim)
-            qpos_embed = self.encoder_joint_proj(qpos)  # (bs, hidden_dim)
-            qpos_embed = torch.unsqueeze(qpos_embed, axis=1)  # (bs, 1, hidden_dim)
-            cls_embed = self.cls_embed.weight # (1, hidden_dim)
-            cls_embed = torch.unsqueeze(cls_embed, axis=0).repeat(bs, 1, 1) # (bs, 1, hidden_dim)
-            encoder_input = torch.cat([cls_embed, qpos_embed, action_embed], axis=1) # (bs, seq+1, hidden_dim)
-            encoder_input = encoder_input.permute(1, 0, 2) # (seq+1, bs, hidden_dim)
-            # do not mask cls token
-            cls_joint_is_pad = torch.full((bs, 2), False).to(qpos.device) # False: not a padding
-            is_pad = torch.cat([cls_joint_is_pad, is_pad], axis=1)  # (bs, seq+1)
-            # obtain position embedding
-            pos_embed = self.pos_table.clone().detach()
-            pos_embed = pos_embed.permute(1, 0, 2)  # (seq+1, 1, hidden_dim)
-            # query model
-            encoder_output = self.encoder(encoder_input, pos=pos_embed, src_key_padding_mask=is_pad)
-            encoder_output = encoder_output[0] # take cls output only
-            latent_info = self.latent_proj(encoder_output)
-            mu = latent_info[:, :self.latent_dim]
-            logvar = latent_info[:, self.latent_dim:]
-            latent_sample = reparametrize(mu, logvar)
-            latent_input = self.latent_out_proj(latent_sample)
+            mu = logvar = torch.zeros((bs, self.latent_dim)).to(qpos.device)
         else:
             mu = logvar = None
-            latent_sample = torch.zeros([bs, self.latent_dim], dtype=torch.float32).to(qpos.device)
-            latent_input = self.latent_out_proj(latent_sample)
+        latent_sample = torch.zeros([bs, self.latent_dim], dtype=torch.float32).to(qpos.device)
+        latent_input = self.latent_out_proj(latent_sample)
 
         if self.backbones is not None:
             # Image observation features and position embeddings
