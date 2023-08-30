@@ -18,7 +18,7 @@ e = IPython.embed
 
 class DETRVAE(nn.Module):
     """ This is the DETR module that performs object detection """
-    def __init__(self, backbones, transformer, sentence_encoder, state_dim, num_queries, camera_names, sentence_embeddings_path=None):
+    def __init__(self, backbones, transformer, sentence_encoder, state_dim, num_queries, camera_names, sentence_embeddings_path=None, use_film=False):
         """ Initializes the model.
         Parameters:
             backbones: torch module of the backbone to be used. See backbone.py
@@ -29,11 +29,13 @@ class DETRVAE(nn.Module):
                          DETR can detect in a single image. For COCO, we recommend 100 queries.
             camera_names: Names of cameras used for data collection and training.
             sentence_embeddings_path: (Optional) Path to frozen sentence embeddings.
+            use_film: Whether to use FiLM language encoding.
         """
         super().__init__()
         self.num_queries = num_queries
         self.camera_names = camera_names
         self.transformer = transformer
+        self.use_film = use_film
         # At training time, we want to load frozen pre-trained sentence embeddings instead of running unnecessary forward passes
         # through the large sentence encoder model -- since the target labels are fixed anyway. Therefore, there is no need to
         # initialize the sentence encoder at all. We just need to load saved sentence embeddings.
@@ -96,12 +98,25 @@ class DETRVAE(nn.Module):
         """
         is_training = actions is not None # train or val
         bs, _ = qpos.shape
+        # Sentence encoder
+        # - If we are training, load frozen sentence embeddings.
+        # - Else, do a forward pass through the sentence encoder.
+        if self.use_frozen_sentence_embeddings:
+            sentence_embeddings = self.get_frozen_sentence_embeddings(target_label)
+        else:
+            with torch.no_grad():
+                tokens = clip.tokenize(target_label).to('cuda')
+                sentence_embeddings = self.sentence_encoder.encode_text(tokens).float()
+        lang_input = self.sentence_encoder_proj(sentence_embeddings)
         if self.backbones is not None:
             # Image observation features and position embeddings
             all_cam_features = []
             all_cam_pos = []
             for cam_id, cam_name in enumerate(self.camera_names):
-                features, pos = self.backbones[0](image[:, cam_id]) # HARDCODED
+                if self.use_film:
+                    features, pos = self.backbones[0](image[:, cam_id], sentence_embeddings)
+                else:
+                    features, pos = self.backbones[0](image[:, cam_id])
                 features = features[0] # take the last layer feature
                 pos = pos[0]
                 all_cam_features.append(self.input_proj(features))
@@ -111,16 +126,6 @@ class DETRVAE(nn.Module):
             # fold camera dimension into width dimension
             src = torch.cat(all_cam_features, axis=3)
             pos = torch.cat(all_cam_pos, axis=3)
-            # Sentence encoder
-            # - If we are training, load frozen sentence embeddings.
-            # - Else, do a forward pass through the sentence encoder.
-            if self.use_frozen_sentence_embeddings:
-                sentence_embeddings = self.get_frozen_sentence_embeddings(target_label)
-            else:
-                with torch.no_grad():
-                    tokens = clip.tokenize(target_label).to('cuda')
-                    sentence_embeddings = self.sentence_encoder.encode_text(tokens).float()
-            lang_input = self.sentence_encoder_proj(sentence_embeddings)
             hs = self.transformer(src, None, self.query_embed.weight, pos, proprio_input, self.additional_pos_embed.weight, lang_input)[0]
         else:
             qpos = self.input_proj_robot_state(qpos)
@@ -234,6 +239,7 @@ def build(args):
         num_queries=args.num_queries,
         camera_names=args.camera_names,
         sentence_embeddings_path=args.sentence_embeddings_path,
+        use_film='film' in args.backbone,
     )
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)

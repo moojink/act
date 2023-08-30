@@ -75,7 +75,7 @@ def get_args_parser():
                         help="(Only applicable when loading checkpoint) Whether to load the previously saved optimizer state.")
     parser.add_argument("--img_size", type=int, default=256,
                         help="Size of (square) image observations.")
-    parser.add_argument("--image_encoder", type=str, default='resnet18', choices=['resnet18', 'resnet34', 'resnet50', 'efficientnet_b0', 'efficientnet_b3'],
+    parser.add_argument("--image_encoder", type=str, default='resnet18', choices=['resnet18', 'resnet34', 'resnet50', 'efficientnet_b0', 'efficientnet_b3', 'efficientnet_b0film', 'efficientnet_b3film'],
                         help="Which image encoder to use for the BC policy.")
     parser.add_argument("--sentence_embeddings_path", type=str, default='R2D2/sentence_embeddings/sentence_embeddings_ViT-L-14@336px.json',
                         help="Path to frozen sentence embeddings (optional, for faster training).")

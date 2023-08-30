@@ -4,6 +4,7 @@ Backbone modules.
 """
 from collections import OrderedDict
 
+import math
 import torch
 import torch.nn.functional as F
 import torchvision
@@ -80,7 +81,7 @@ class BackboneBase(nn.Module):
 
 
 class Backbone(BackboneBase):
-    """ResNet backbone with frozen BatchNorm."""
+    """Image encoder backbone."""
     def __init__(self, name: str,
                  train_backbone: bool,
                  return_interm_layers: bool,
@@ -129,6 +130,14 @@ class Joiner(nn.Sequential):
         super().__init__(backbone, position_embedding)
 
     def forward(self, tensor_list: NestedTensor):
+        """
+        Args:
+            tensor_list: torch.Tensor of shape (batch_size, C, H, W)
+
+        Returns:
+            out: 1-length list of torch.Tensor of shape (batch_size, C_final, H_final, W_final).
+            pos: 1-length list of torch.Tensor of shape (1, hidden_dim, H_final, W_final).
+        """
         xs = self[0](tensor_list)
         out: List[NestedTensor] = []
         pos = []
@@ -136,7 +145,78 @@ class Joiner(nn.Sequential):
             out.append(x)
             # position encoding
             pos.append(self[1](x).to(x.dtype))
+        return out, pos
 
+
+class FilMedBackbone(torch.nn.Module):
+    """FiLMed image encoder backbone."""
+    def __init__(self, name: str):
+        super().__init__()
+        # Load pretrained weights.
+        if name == 'resnet18film':
+            weights = ResNet18_Weights.DEFAULT
+            self.num_channels = 512
+            pass # TODO: FiLMed ResNet-18
+        elif name == 'resnet34film':
+            weights = ResNet34_Weights.DEFAULT
+            self.num_channels = 512
+            pass # TODO: FiLMed ResNet-34
+        elif name == 'resnet50film':
+            weights = ResNet50_Weights.DEFAULT
+            self.num_channels = 2048
+            pass # TODO: FiLMed ResNet-50
+        elif name == 'efficientnet_b0film':
+            weights = EfficientNet_B0_Weights.DEFAULT
+            self.num_channels = 1280
+            self.backbone = film_efficientnet_b0(weights=weights, use_film=True)
+        elif name == 'efficientnet_b3film':
+            weights = EfficientNet_B3_Weights.DEFAULT
+            self.num_channels = 1536
+            self.backbone = film_efficientnet_b3(weights=weights, use_film=True)
+        else:
+            raise ValueError
+        # Remove final average pooling and classification layers.
+        if 'resnet' in name:
+            pass # TODO
+        else: # efficientnet
+            self.backbone.avgpool = nn.Sequential() # remove average pool layer
+            self.backbone.classifier = nn.Sequential() # remove classification layer
+        # Get image preprocessing function.
+        self.preprocess = weights.transforms() # Use this to preprocess images the same way as the pretrained model (e.g., ResNet-18).
+        # self.preprocess = transforms.Compose([ # Use this if you don't want to resize images to 224x224.
+        #     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        # ])
+
+    def forward(self, img_obs, language_embed):
+        # img_obs shape: (batch_size, 3, H, W)
+        # language_embed shape: (batch_size, 768)
+        img_obs = img_obs.float() # cast to float type
+        img_obs = self.preprocess(img_obs)
+        out = self.backbone(img_obs, language_embed) # shape (B, C_final * H_final * W_final) or (B, C_final, H_final, W_final)
+        # If needed, unflatten output tensor from (B, C_final * H_final * W_final) to (B, C_final, H_final, W_final)
+        if len(out.shape) == 2:
+            H_final = W_final = int(math.sqrt(out.shape[-1] // self.num_channels))
+            out = torch.unflatten(out, -1, (self.num_channels, H_final, W_final))
+        return out
+
+
+class FiLMedJoiner(nn.Sequential):
+    def __init__(self, backbone, position_embedding):
+        super().__init__(backbone, position_embedding)
+
+    def forward(self, img_obs, language_embed):
+        """
+        Args:
+            img_obs: torch.Tensor of shape (batch_size, C, H, W)
+            language_embed: torch.Tensor of shape (batch_size, language_embed_size)
+
+        Returns:
+            out: 1-length list of torch.Tensor of shape (batch_size, C_final, H_final, W_final).
+            pos: 1-length list of torch.Tensor of shape (1, hidden_dim, H_final, W_final).
+        """
+        # self[0]: backbone, self[1]: position_embedding
+        out = [self[0](img_obs, language_embed)]
+        pos = [self[1](out[0]).to(out[0].dtype)]
         return out, pos
 
 
@@ -144,7 +224,11 @@ def build_backbone(args):
     position_embedding = build_position_encoding(args)
     train_backbone = args.lr_backbone > 0
     return_interm_layers = args.masks
-    backbone = Backbone(args.backbone, train_backbone, return_interm_layers, args.dilation)
-    model = Joiner(backbone, position_embedding)
+    if 'film' in args.backbone:
+        backbone = FilMedBackbone(args.backbone)
+        model = FiLMedJoiner(backbone, position_embedding)
+    else:
+        backbone = Backbone(args.backbone, train_backbone, return_interm_layers, args.dilation)
+        model = Joiner(backbone, position_embedding)
     model.num_channels = backbone.num_channels
     return model
