@@ -36,7 +36,7 @@ class ACTPolicy(nn.Module):
 
             return loss_dict
         else: # inference time
-            a_hat, _, (_, _) = self.model(qpos, image, env_state, target_label=target_label) # no action, sample from prior
+            a_hat, _, = self.model(qpos, image, env_state, target_label=target_label) # no action, sample from prior
             return a_hat
 
     def configure_optimizers(self):

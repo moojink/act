@@ -145,7 +145,7 @@ def eval_bc(args, policy_config, save_episode=True):
     # load policy and stats
     checkpoint_path = os.path.join(args.checkpoint_dir, f'policy_epoch_{args.checkpoint_epoch}_seed_{args.seed}.ckpt')
     policy = make_policy(args.policy_class, policy_config)
-    loading_status = policy.load_state_dict(torch.load(checkpoint_path))
+    loading_status = policy.load_state_dict(torch.load(checkpoint_path), strict=False)
     print(loading_status)
     policy.cuda()
     policy.eval()
