@@ -41,7 +41,7 @@ def get_args_parser():
                         help="Intermediate size of the feedforward layers in the transformer blocks")
     parser.add_argument('--hidden_dim', default=256, type=int, # will be overridden
                         help="Size of the embeddings (dimension of the transformer)")
-    parser.add_argument('--dropout', default=0.1, type=float,
+    parser.add_argument('--dropout', default=0.0, type=float,
                         help="Dropout applied in the transformer")
     parser.add_argument('--nheads', default=8, type=int, # will be overridden
                         help="Number of attention heads inside the transformer's attentions")
@@ -91,6 +91,12 @@ def get_args_parser():
                         help="We write to TensorBoard once per `tb_writer_interval` steps.")
     parser.add_argument("--debug", type=str_to_bool, default=False,
                         help="Whether to enable debugging mode.")
+    parser.add_argument("--use_moo", type=str_to_bool, default=False,
+                        help="Whether to enable MOO-style object detection.")
+    parser.add_argument("--multiply_mask", type=str_to_bool, default=False,
+                        help="(Only applicable when --use_moo==True) Whether to multiply the RGB image by the object mask output by OWL-ViT object detector.")
+    parser.add_argument("--concat_mask", type=str_to_bool, default=True,
+                        help="(Only applicable when --use_moo==True) Whether to concatenate the RGB image and object mask output by OWL-ViT object detector.")
 
     return parser
 

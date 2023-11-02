@@ -5,22 +5,27 @@ import h5py
 import random
 import torchvision.transforms as transforms
 from torch.utils.data import ConcatDataset, TensorDataset, DataLoader
-from upgm.utils.data_utils import get_actions_and_target_labels_dict, get_actions_dict, get_images_dict, get_mp4_filepaths, get_spartn_traj_hdf5_filepaths, get_target_labels_dict, get_traj_hdf5_filepaths
+from upgm.utils.data_utils import get_actions_and_target_labels_dict, get_actions_dict, get_bb_masks_hdf5_filepaths, get_images_dict, get_mp4_filepaths, get_spartn_traj_hdf5_filepaths, get_target_labels_dict, get_traj_hdf5_filepaths
 
 import IPython
 e = IPython.embed
 
 class EpisodicDataset(torch.utils.data.Dataset):
-    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, img_size):
+    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, img_size, use_moo, multiply_mask, concat_mask):
         super(EpisodicDataset).__init__()
         self.episode_ids = episode_ids
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names
         self.norm_stats = norm_stats
         self.img_size = img_size
+        self.use_moo = use_moo
+        self.multiply_mask = multiply_mask
+        self.concat_mask = concat_mask
         # For UPGM R2D2:
         self.traj_hdf5_filepaths = get_traj_hdf5_filepaths(data_dir=self.dataset_dir) # list of paths to the `trajectory.h5` files containing action labels
         self.max_episode_length = 300 # hardcoded; the policy requires all sampled actions to have the same length
+        if self.use_moo:
+            self.bb_masks_hdf5_filepaths = get_bb_masks_hdf5_filepaths(data_dir=self.dataset_dir, img_size=img_size)
 
     def __len__(self):
         return len(self.episode_ids)
@@ -44,6 +49,25 @@ class EpisodicDataset(torch.utils.data.Dataset):
             # Hard-coding joint positions/velocities as zeros since we don't use them as inputs in UPGM.
             qpos = np.zeros((7,))
             action_length = episode_length - step_index
+        # If using MOO-style inputs, concatenate an object mask channel-wise to the image.
+        if self.use_moo:
+            bb_mask_hdf5_filepath = self.bb_masks_hdf5_filepaths[index]
+            with h5py.File(bb_mask_hdf5_filepath, 'r') as f:
+                if step_index >= f['bounding_box_masks'].shape[0]: # no bounding box exists
+                    bb_mask = np.zeros((self.img_size, self.img_size), dtype=np.uint8) # shape: (H, W)
+                else: # yes bounding box exists
+                    bb_mask = f['bounding_box_masks'][step_index] # shape: (H, W)
+                    # Replace the target label with the label "object". This is similar to how the object description is excluded in the original MOO paper.
+                    target_label = 'object'
+                bb_mask = np.expand_dims(bb_mask, -1) # shape: (H, W, 1)
+                if self.multiply_mask:
+                    # Multiply the image by the object mask so that all of the image except for the detected object is zero.
+                    # Result: (H, W, 3) image
+                    image_dict[self.camera_names[0]][:,:,:3] *= (bb_mask // 255)
+                if self.concat_mask:
+                    # Concatenate the object mask to the image.
+                    # Result: (H, W, 4) image and mask
+                    image_dict[self.camera_names[0]] = np.concatenate((image_dict[self.camera_names[0]], bb_mask), axis=-1) # shape: (H, W, 4)
         # Create padded actions tensor and is_pad bool tensors because they're required by the Transformer policy.
         padded_action = np.zeros(padded_action_shape, dtype=np.float32)
         padded_action[:action_length] = action
@@ -282,7 +306,7 @@ def get_norm_stats(dataset_dir, num_episodes):
     return stats
 
 
-def load_data(dataset_dir, num_episodes, camera_names, batch_size, img_size, apply_aug, spartn, use_ram):
+def load_data(dataset_dir, num_episodes, camera_names, batch_size, img_size, apply_aug, spartn, use_ram, use_moo, multiply_mask, concat_mask):
     print(f'\Loading data from: {dataset_dir}\n')
     # obtain train test split
     train_ratio = 0.9
@@ -294,7 +318,9 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size, img_size, app
     norm_stats = get_norm_stats(dataset_dir, num_episodes)
 
     # construct dataset and dataloader
-    train_dataset = EpisodicDatasetMemory(train_indices, dataset_dir, camera_names, norm_stats, img_size) if use_ram else EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats, img_size)
+    if use_moo == True:
+        assert use_ram == False, "use_ram==True currently not supported when use_moo==True!"
+    train_dataset = EpisodicDatasetMemory(train_indices, dataset_dir, camera_names, norm_stats, img_size) if use_ram else EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats, img_size, use_moo, multiply_mask, concat_mask)
     if apply_aug:
         train_dataset = AugmentedExpertedDataset(train_dataset)
     if spartn:
@@ -304,7 +330,7 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size, img_size, app
         train_weights = [0.5 * x for x in train_weights] # original dataset weights
         train_weights.extend(len(spartn_dataset) * [0.5 / len(spartn_dataset)]) # SPARTN augmentations dataset weights
         train_dataset = ConcatDataset([train_dataset, spartn_dataset])
-    val_dataset = EpisodicDatasetMemory(val_indices, dataset_dir, camera_names, norm_stats, img_size) if use_ram else EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats, img_size)
+    val_dataset = EpisodicDatasetMemory(val_indices, dataset_dir, camera_names, norm_stats, img_size) if use_ram else EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats, img_size, use_moo, multiply_mask, concat_mask)
     num_workers = 0 if use_ram else len(os.sched_getaffinity(0)) # num CPU cores available to current training job -- do NOT use os.cpu_count()! -- source: https://stackoverflow.com/a/55423170
     print(f'Number of dataloader workers: {num_workers}')
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=num_workers)
@@ -313,6 +339,29 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size, img_size, app
     print(f'Number of episodes in validation set: {len(val_dataset)}')
     return train_dataloader, val_dataloader, norm_stats
 
+
+def load_data_debug(dataset_dir, num_episodes, camera_names, batch_size, img_size, apply_aug, spartn, use_ram, use_moo, multiply_mask, concat_mask):
+    """For debugging with a tiny dataset."""
+    print(f'\Loading data from: {dataset_dir}\n')
+    # obtain train test split
+    train_ratio = 1
+    shuffled_indices = np.random.permutation(num_episodes)
+    train_indices = shuffled_indices[:1]
+    val_indices = shuffled_indices[1:]
+    # obtain normalization stats for qpos and action
+    norm_stats = get_norm_stats(dataset_dir, num_episodes)
+    # construct dataset and dataloader
+    if use_moo == True:
+        assert use_ram == False, "use_ram==True currently not supported when use_moo==True!"
+    train_dataset = EpisodicDatasetMemory(train_indices, dataset_dir, camera_names, norm_stats, img_size) if use_ram else EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats, img_size, use_moo, multiply_mask, concat_mask)
+    val_dataset = EpisodicDatasetMemory(val_indices, dataset_dir, camera_names, norm_stats, img_size) if use_ram else EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats, img_size, use_moo, multiply_mask, concat_mask)
+    num_workers = 0 if use_ram else len(os.sched_getaffinity(0)) # num CPU cores available to current training job -- do NOT use os.cpu_count()! -- source: https://stackoverflow.com/a/55423170
+    print(f'Number of dataloader workers: {num_workers}')
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=num_workers)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=num_workers)
+    print(f'\nNumber of episodes in training set: {len(train_dataset)}')
+    print(f'Number of episodes in validation set: {len(val_dataset)}')
+    return train_dataloader, val_dataloader, norm_stats
 
 ### env utils
 

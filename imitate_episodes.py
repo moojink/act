@@ -11,14 +11,15 @@ import matplotlib.pyplot as plt
 from copy import deepcopy
 from tqdm import tqdm
 from einops import rearrange
+from transformers import OwlViTProcessor, OwlViTForObjectDetection
 
 from constants import DT
 from constants import PUPPET_GRIPPER_JOINT_OPEN
-from utils import load_data # data functions
+from utils import load_data, load_data_debug # data functions
 from utils import sample_box_pose, sample_insertion_pose # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
 from utils import str_to_bool # for arg parsing bool args
-from policy import ACTPolicy, CNNMLPPolicy
+from policy import ACTPolicy, CNNMLPPolicy, DebugPolicy
 from visualize_episodes import save_videos
 
 from r2d2.robot_env import RobotEnv
@@ -48,7 +49,7 @@ def main(args):
 
     # fixed parameters
     state_dim = 7 # this is like the action dim
-    if args.policy_class == 'ACT':
+    if args.policy_class in ['ACT', 'debug']:
         policy_config = {'lr': args.lr,
                          'num_queries': args.chunk_size,
                          'hidden_dim': args.hidden_dim,
@@ -60,6 +61,10 @@ def main(args):
                          'nheads': args.nheads,
                          'camera_names': camera_names,
                          'state_dim': state_dim,
+                         'use_moo': args.use_moo,
+                         'multiply_mask': args.multiply_mask,
+                         'concat_mask': args.concat_mask,
+                         'img_size': args.img_size,
                          }
     elif policy_class == 'CNNMLP':
         policy_config = {'lr': args.lr, 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
@@ -71,7 +76,7 @@ def main(args):
         success_rate, avg_return = eval_bc(args, policy_config, save_episode=True)
         exit()
 
-    train_dataloader, val_dataloader, stats = load_data(dataset_dir, num_episodes, camera_names, args.batch_size, args.img_size, args.apply_aug, args.spartn, args.use_ram)
+    train_dataloader, val_dataloader, stats = load_data(dataset_dir, num_episodes, camera_names, args.batch_size, args.img_size, args.apply_aug, args.spartn, args.use_ram, args.use_moo, args.multiply_mask, args.concat_mask)
 
     # save dataset stats
     stats_path = os.path.join(args.log_dir, f'dataset_stats.pkl')
@@ -101,15 +106,15 @@ def make_policy(policy_class, policy_config):
         print(f'# trainable parameters: {num_trainable_params}\n')
     elif policy_class == 'CNNMLP':
         policy = CNNMLPPolicy(policy_config)
+    elif policy_class == 'debug':
+        policy = DebugPolicy(policy_config)
     else:
         raise NotImplementedError
     return policy
 
 
 def make_optimizer(policy_class, policy):
-    if policy_class == 'ACT':
-        optimizer = policy.configure_optimizers()
-    elif policy_class == 'CNNMLP':
+    if policy_class in ['ACT', 'CNNMLP', 'debug']:
         optimizer = policy.configure_optimizers()
     else:
         raise NotImplementedError
@@ -126,30 +131,66 @@ def get_image(ts, camera_names):
     return curr_image
 
 
-def save_rollout_gif(img_list):
+def save_rollout_gif(rollout_path, img_list):
     """Turns a list of images into a video and saves it."""
     if img_list == []:
         return
     speedup = 3
     img_list = [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in img_list]
-    rollout_path = 'rollout.gif'
-    effective_fps = 15 * speedup
+    effective_fps = 5 * speedup
     duration_in_milliseconds = 1000 * 1 / effective_fps
-    imageio.mimwrite(rollout_path, img_list, duration=duration_in_milliseconds, loop=True)
+    imageio.mimwrite(rollout_path, img_list, duration=duration_in_milliseconds, loop=0)
     print(f'Saved rollout GIF at path {rollout_path}')
 
 def eval_bc(args, policy_config, save_episode=True):
+    input('WARNING: Image preprocessing has since changed (no more center crop). Make sure you are using the right preprocessing scheme in backbone.py. For logs/act/3473_demos--efficientnet_b0film--no_aug--lr=5e-5--enc_layers=2--dec_layers=2/2/, we do NOT use center crop. Press Enter to acknowledge and continue...')
     set_seed(args.seed)
     max_timesteps = 600
+
+    input('WARNING: Make sure you are using the right setting of MOO with the right checkpoint (multiply mask vs. not).')
+
+    randomize = False
+    input(f'Note: randomize == {randomize}. Press Enter to acknowledge...')
 
     # load policy and stats
     checkpoint_path = os.path.join(args.checkpoint_dir, f'policy_epoch_{args.checkpoint_epoch}_seed_{args.seed}.ckpt')
     policy = make_policy(args.policy_class, policy_config)
-    loading_status = policy.load_state_dict(torch.load(checkpoint_path), strict=False)
+    model_state_dict = torch.load(checkpoint_path)
+    # ########### TODO ################
+    # model_state_dict['model.backbones.0.0.backbone.first_layer.0.weight'] = model_state_dict['model.backbones.0.0.backbone.first_layer.0.weight'][:,:3,:,:]
+    # ########### TODO ################
+    loading_status = policy.load_state_dict(model_state_dict, strict=False)
     print(loading_status)
     policy.cuda()
     policy.eval()
     print(f'Loaded: {checkpoint_path}')
+
+    # Load OWL-ViT if using MOO.
+    if args.use_moo:
+        supplement_descriptions_dict = {
+            'small blue cup': 'blue cylinder',
+            'orange sushi': 'orange and white salmon sushi toy with stripes',
+            'purple grapes': 'blue bunch of grapes',
+            'red tomato': 'tomato',
+            'purple eggplant': 'blue or purple and green toy',
+            'green broccoli': 'green mushroom toy',
+        }
+        substitute_descriptions_dict = {
+            'clear cup': 'reflective clear transparent glass cup',
+            'yellow lemon': 'yellow circle',
+            'orange carrot': 'carrot stick',
+            'green grapes': 'green pinecone',
+            'pink ice cream': 'pink icecream cone',
+            'white ice cream': 'white vanilla icecream cone',
+            'blue and white milk carton': 'white carton with blue stripes',
+            'brown and white milk carton': 'white carton with brown stripes',
+            'small pink donut': 'pink ring donut',
+        }
+        processor = OwlViTProcessor.from_pretrained("google/owlvit-base-patch32")
+        model = OwlViTForObjectDetection.from_pretrained("google/owlvit-base-patch32")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model = model.to(device)
+
     stats_path = os.path.join(args.checkpoint_dir, f'dataset_stats.pkl')
     with open(stats_path, 'rb') as f:
         stats = pickle.load(f)
@@ -175,7 +216,8 @@ def eval_bc(args, policy_config, save_episode=True):
             if user_input != '':
                 target_label = user_input
         print(f'Target object to grasp: {target_label}')
-        env.reset()
+        saved_target_label = target_label # saving it for later
+        env.reset(randomize)
         input('Press Enter to begin...')
 
 
@@ -183,11 +225,15 @@ def eval_bc(args, policy_config, save_episode=True):
         if args.temporal_agg:
             all_time_actions = torch.zeros([max_timesteps, max_timesteps+num_queries, policy_config['state_dim']]).cuda()
         qpos_history = torch.zeros((1, max_timesteps, 7)).cuda()
-        image_list = [] # for visualization
+        image_list = [] # for visualization: original image observations
+        masked_image_list = [] # for OWL-ViT visualization: original images multipled by object mask
+        image_with_bb_mask_list = [] # for OWL-ViT visualization: original images with red bounding boxes drawn in
         with torch.inference_mode():
             for t in range(max_timesteps):
                 try:
-                    print(f'step: {t}')
+                    print(f'--------\nstep: {t}')
+                    # Reset target object label, since it may have been overridden post-OWL-ViT-detection.
+                    target_label = saved_target_label
                     # Mark starting time.
                     step_start_time = time.time()
                     ### process previous timestep to get qpos and image_list
@@ -195,8 +241,13 @@ def eval_bc(args, policy_config, save_episode=True):
                     obs_dict = env.get_observation()
                     image = obs_dict['image'][policy_config['camera_names'][0]][:] # shape: (480, 640, 3)
                     image = image[:, 80:560, :] # shape: (480, 480, 3)
-                    image = cv2.resize(image, (256, 256)) # shape: (256, 256, 3)
-                    image_list.append(image)
+                    if args.use_moo:
+                        image_for_owlvit = np.copy(image)
+                    image = cv2.resize(image, (args.img_size, args.img_size)) # shape: (256, 256, 3)
+                    if t < 100:
+                        image_list.append(image)
+                        image_with_bb_mask_list.append(image)
+                        masked_image_list.append(image)
                     # Get robot state.
                     # For now, we just set the robot state to all zeros since the policy does not have proprioceptive inputs.
                     # qpos = np.append(obs_dict['robot_state']['joint_positions'], obs_dict['robot_state']['gripper_position'])
@@ -211,8 +262,89 @@ def eval_bc(args, policy_config, save_episode=True):
                     # normalize image and change dtype to float
                     image = image / 255.0
                     ### query policy
-                    if args.policy_class == "ACT":
+                    if args.policy_class in ['ACT', 'debug']:
                         if t % query_frequency == 0:
+                            if args.use_moo:
+                                # Prepare the bounding box mask. If no object is detected, it will just be all zeros.
+                                # Else, we will fill it in with ones in the bounding box area (solid fill).
+                                bb_mask = np.zeros((image_for_owlvit.shape[0], image_for_owlvit.shape[1]), dtype=np.float32)
+                                if t < 30: # only use MOO for the first part of trajectory
+                                    owlvit_start_time = time.time()
+                                    image_for_owlvit = cv2.cvtColor(image_for_owlvit, cv2.COLOR_BGR2RGB) # IMPORTANT: originally the image are BGR, so we must convert to RGB for OWL-ViT (but NOT for our policy)
+                                    # Preprocess image and text.
+                                    texts = [[ # simple prompt engineering: try various prompts (later we will take the bounding box with highest confidence)
+                                        'an image of ' + target_label,
+                                        'a photo of ' + target_label,
+                                        target_label,
+                                    ]]
+                                    # SUPPLEMENT the language description if needed.
+                                    if target_label in supplement_descriptions_dict:
+                                        texts[0] += [
+                                        'an image of ' + supplement_descriptions_dict[target_label],
+                                        'a photo of ' + supplement_descriptions_dict[target_label],
+                                        supplement_descriptions_dict[target_label],
+                                    ]
+                                    # REPLACE the language description if needed.
+                                    if target_label in substitute_descriptions_dict:
+                                        texts[0] = [
+                                        'an image of ' + substitute_descriptions_dict[target_label],
+                                        'a photo of ' + substitute_descriptions_dict[target_label],
+                                        substitute_descriptions_dict[target_label],
+                                    ]
+                                    inputs = processor(text=texts, images=image_for_owlvit, return_tensors="pt").to(device)
+                                    # Get OWL-ViT output.
+                                    outputs = model(**inputs)
+                                    target_sizes = torch.Tensor([image_for_owlvit.shape[:2]]).to(device)
+                                    # Convert raw output into bounding box format.
+                                    results = processor.post_process_object_detection(outputs=outputs, target_sizes=target_sizes, threshold=0.05)
+                                    texts_idx = 0
+                                    text = texts[texts_idx] # just get first object in texts list, which has 1 element
+                                    boxes, scores, labels = results[texts_idx]["boxes"], results[texts_idx]["scores"], results[texts_idx]["labels"]
+                                    image_for_owlvit = cv2.cvtColor(image_for_owlvit, cv2.COLOR_RGB2BGR) # convert back to BGR for visualizations
+                                    img = np.copy(image_for_owlvit) # for debugging
+                                    if scores.numel() != 0: # if any object was detected
+                                        # Take only the max confidence prediction.
+                                        max_score_idx = torch.argmax(scores)
+                                        max_score_box, max_score, max_score_label = boxes[max_score_idx], scores[max_score_idx], labels[max_score_idx]
+                                        x_1, y_1, x_2, y_2 = max_score_box
+                                        x_1 = int(x_1)
+                                        y_1 = int(y_1)
+                                        x_2 = int(x_2)
+                                        y_2 = int(y_2)
+                                        print(f"Detected \"{text[max_score_label]}\" with confidence {round(max_score.item(), 3)} at location {max_score_box.cpu().numpy().tolist()}")
+                                        max_score_textual_label = texts[texts_idx][max_score_label]
+                                        # (For debugging) Save image of the bounding box overlayed on the original image.
+                                        img = cv2.rectangle(img, (x_1, y_1), (x_2, y_2), (0, 0, 255), 4)
+                                        # Fill bounding box area with white pixels.
+                                        bb_mask[y_1:y_2, x_1:x_2] = 1 # IMPORTANT: USE 1, NOT 255, bc we have float32 here (unlike the uint8 during data processing)
+                                        # Print debugging stuff.
+                                        debug_img_path = './debug--owlvit_image_with_mask.png'
+                                        debug_mask_path = './debug--owlvit_mask.png'
+                                        cv2.imwrite(debug_img_path, img) # for debugging
+                                        cv2.imwrite(debug_mask_path, np.array(bb_mask, dtype=np.uint8) * 255) # for debugging
+                                        print(f'OWL-ViT elapsed time (processing + detection): {time.time() - owlvit_start_time:.3f}')
+                                        print(f'Image with bounding box saved at path {debug_img_path}')
+                                        print(f'Object mask saved at path {debug_mask_path}')
+                                        # input('Press Enter to continue...')
+                                        # For visualizations: Remove the just-added bare image and add the image with mask applied.
+                                        if t < 100:
+                                            image_with_bb_mask_list.pop()
+                                            image_with_bb_mask_list.append(cv2.resize(img, (args.img_size, args.img_size)))
+                                        # Replace the target label with the label "object". This is similar to how the object description is excluded in the original MOO paper.
+                                        target_label = 'object'
+                                # Reshape bb_mask to target image size.
+                                bb_mask = cv2.resize(bb_mask, (args.img_size, args.img_size), interpolation=cv2.INTER_NEAREST) # INTER_NEAREST to maintain sharp edges
+                                bb_mask = bb_mask[None,None,None,:,:] # shape: (H, W) -> (1, 1, 1, H, W)
+                                bb_mask = torch.Tensor(bb_mask).to(device)
+                                if args.multiply_mask:
+                                    # Multiply the image by the object mask so that all of the image except for the detected object is zero.
+                                    image = image * bb_mask # shape: (1, 1, 3, H, W)
+                                    if t < 100:
+                                        masked_image_list.pop()
+                                        masked_image_list.append(np.transpose((image.cpu().numpy()[0,0]*255).astype(np.uint8), (1,2,0)))
+                                if args.concat_mask:
+                                    # Concatenate original image observation and object mask.
+                                    image = torch.cat((image, bb_mask), dim=2) # shape: (1, 1, 4, H, W)
                             all_actions = policy(qpos, image, target_label=target_label)
                         if args.temporal_agg:
                             all_time_actions[[t], t:t+num_queries] = all_actions
@@ -227,7 +359,7 @@ def eval_bc(args, policy_config, save_episode=True):
                         else:
                             raw_action = all_actions[:, t % query_frequency]
                     elif args.policy_class == "CNNMLP":
-                        raw_action = policy(qpos, image, target_label=target_label)
+                        raise ValueError('CNNMLP is not supported!')
                     else:
                         raise NotImplementedError
                     ### post-process actions
@@ -235,6 +367,7 @@ def eval_bc(args, policy_config, save_episode=True):
                     action = post_process(raw_action)
                     action = np.clip(action, -1, 1)
                     ### step the environment
+                    print(f'target_label: {target_label}')
                     print(f'action: {action}')
                     action_info = env.step(action)
                     # Sleep the amount necessary to maintain consistent control frequency.
@@ -244,7 +377,10 @@ def eval_bc(args, policy_config, save_episode=True):
                     if time_to_sleep > 0:
                         time.sleep(time_to_sleep)
                 except KeyboardInterrupt:
-                    # save_rollout_gif(image_list)
+                    print('')
+                    save_rollout_gif('rollout.gif', image_list)
+                    save_rollout_gif('rollout-with-bb_masks.gif', image_with_bb_mask_list)
+                    save_rollout_gif('rollout-with-masked-images.gif', masked_image_list)
                     image_list = [] # reset the episode replay GIF
                     user_input = input('\nEnter (Ctrl-C) to quit the program, or anything else to continue to the next episode...')
                     break
@@ -253,7 +389,7 @@ def eval_bc(args, policy_config, save_episode=True):
 def forward_pass(data, policy):
     image_data, qpos_data, action_data, is_pad, target_label = data
     image_data, qpos_data, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
-    return policy(qpos_data, image_data, action_data, is_pad, target_label) # TODO remove None
+    return policy(qpos_data, image_data, action_data, is_pad, target_label)
 
 
 def update_log_dir(log_dir):
@@ -472,6 +608,12 @@ if __name__ == '__main__':
                         help="We write to TensorBoard once per `tb_writer_interval` steps.")
     parser.add_argument("--debug", type=str_to_bool, default=False,
                         help="Whether to enable debugging mode.")
+    parser.add_argument("--use_moo", type=str_to_bool, default=False,
+                        help="Whether to enable MOO-style object detection.")
+    parser.add_argument("--multiply_mask", type=str_to_bool, default=False,
+                        help="(Only applicable when --use_moo==True) Whether to multiply the RGB image by the object mask output by OWL-ViT object detector.")
+    parser.add_argument("--concat_mask", type=str_to_bool, default=True,
+                        help="(Only applicable when --use_moo==True) Whether to concatenate the RGB image and object mask output by OWL-ViT object detector.")
 
     args = parser.parse_args()
     main(args)

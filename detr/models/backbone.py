@@ -108,10 +108,10 @@ class Backbone(BackboneBase):
         if 'resnet' in name:
             backbone = getattr(torchvision.models, name)(
                 replace_stride_with_dilation=[False, False, dilation],
-                weights=weights, norm_layer=FrozenBatchNorm2d) # pretrained # TODO do we want frozen batch_norm??
+                weights=weights, norm_layer=FrozenBatchNorm2d) # pretrained
         else: # efficientnet
             backbone = getattr(torchvision.models, name)(
-                weights=weights, norm_layer=FrozenBatchNorm2d) # pretrained # TODO do we want frozen batch_norm??
+                weights=weights, norm_layer=FrozenBatchNorm2d) # pretrained
         super().__init__(name, backbone, train_backbone, num_channels, return_interm_layers)
         # Get image preprocessing function.
         self.preprocess = weights.transforms() # Use this to preprocess images the same way as the pretrained model (e.g., ResNet-18).
@@ -150,7 +150,7 @@ class Joiner(nn.Sequential):
 
 class FilMedBackbone(torch.nn.Module):
     """FiLMed image encoder backbone."""
-    def __init__(self, name: str):
+    def __init__(self, name: str, use_moo: bool = False, concat_mask: bool = False):
         super().__init__()
         # Load pretrained weights.
         if name == 'resnet18film':
@@ -182,10 +182,47 @@ class FilMedBackbone(torch.nn.Module):
             self.backbone.avgpool = nn.Sequential() # remove average pool layer
             self.backbone.classifier = nn.Sequential() # remove classification layer
         # Get image preprocessing function.
-        self.preprocess = weights.transforms() # Use this to preprocess images the same way as the pretrained model (e.g., ResNet-18).
-        # self.preprocess = transforms.Compose([ # Use this if you don't want to resize images to 224x224.
-        #     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        # ])
+        # self.preprocess = weights.transforms() # Use this to preprocess images the same way as the pretrained model (e.g., ResNet-18).
+        # TODO: Use above for older checkpoints.
+        self.preprocess = transforms.Compose([ # Use this if you want to use custom preprocessing.
+            # Reference (for the default preprocessing used by ResNet & EfficientNet): https://github.com/pytorch/vision/blob/main/torchvision/transforms/_presets.py
+            transforms.Resize(224, interpolation=transforms.functional.InterpolationMode.BILINEAR, antialias=True),
+            transforms.ConvertImageDtype(dtype=torch.float),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+
+        # If using traditional MOO-style inputs (4-channel inputs: RGB image + object mask):
+        # - modify the first layer so that it takes 4 input channels
+        # - modify the image preprocessing transforms to take 4 input channels
+        if use_moo and concat_mask:
+            assert 'efficientnet' in name, "Currently, only EfficientNet can be used with 4-channel inputs."
+            # Modify the first convolutional layer so that it takes 4-channel inputs.
+            # To do so, we make a 4-input-channel Conv2d with the same hyperparameters as the original 3-input-channel Conv2d
+            # and copy in the original Conv2d weights for the first 3 channels. For the 4th channel, we copy in the
+            # weights corresponding to the original layer's first channel.
+            weight = self.backbone.first_layer[0].weight.clone()
+            temp = nn.Conv2d(
+                in_channels=4,
+                out_channels=self.backbone.first_layer[0].out_channels,
+                kernel_size=self.backbone.first_layer[0].kernel_size,
+                stride=self.backbone.first_layer[0].stride,
+                padding=self.backbone.first_layer[0].padding,
+                bias=self.backbone.first_layer[0].bias,
+                padding_mode=self.backbone.first_layer[0].padding_mode,
+            )
+            with torch.no_grad():
+                temp.weight[:, :3] = weight
+                temp.weight[:, 3] = weight[:, 0]
+            self.backbone.first_layer[0] = temp
+            # Modify the image preprocessing scheme to take 4-channel inputs.
+            # The only difference is that for the Normalize transform, we copy the first channel's mean/std into the fourth channel's mean/std.
+            self.preprocess = transforms.Compose([
+                # Reference (for the default preprocessing used by ResNet & EfficientNet): https://github.com/pytorch/vision/blob/main/torchvision/transforms/_presets.py
+                transforms.Resize(224, interpolation=transforms.functional.InterpolationMode.BILINEAR, antialias=True),
+                transforms.ConvertImageDtype(dtype=torch.float),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406, 0.485], std=[0.229, 0.224, 0.225, 0.229]),
+            ])
+
 
     def forward(self, img_obs, language_embed):
         # img_obs shape: (batch_size, 3, H, W)
@@ -225,9 +262,11 @@ def build_backbone(args):
     train_backbone = args.lr_backbone > 0
     return_interm_layers = args.masks
     if 'film' in args.backbone:
-        backbone = FilMedBackbone(args.backbone)
+        backbone = FilMedBackbone(args.backbone, args.use_moo, args.concat_mask)
         model = FiLMedJoiner(backbone, position_embedding)
     else:
+        if args.use_moo == True:
+            raise ValueError('MOO is not currently supported for non-FiLMed image encoders.')
         backbone = Backbone(args.backbone, train_backbone, return_interm_layers, args.dilation)
         model = Joiner(backbone, position_embedding)
     model.num_channels = backbone.num_channels
