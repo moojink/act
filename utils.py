@@ -4,16 +4,16 @@ import os
 import h5py
 import random
 import torchvision.transforms as transforms
-from torch.utils.data import ConcatDataset, TensorDataset, DataLoader
-from upgm.utils.data_utils import get_actions_and_target_labels_dict, get_actions_dict, get_bb_masks_hdf5_filepaths, get_images_dict, get_mp4_filepaths, get_spartn_traj_hdf5_filepaths, get_target_labels_dict, get_traj_hdf5_filepaths
+from torch.utils.data import ConcatDataset, TensorDataset, DataLoader, random_split
+from tqdm import tqdm
+from upgm.utils.data_utils import get_actions_and_target_labels_dict, get_actions_dict, get_bb_masks_dict, get_bb_masks_hdf5_filepaths, get_images_dict, get_mp4_filepaths, get_spartn_traj_hdf5_filepaths, get_target_labels_dict, get_traj_hdf5_filepaths, get_traj_to_bb_mask_path_dict
 
 import IPython
 e = IPython.embed
 
 class EpisodicDataset(torch.utils.data.Dataset):
-    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, img_size, use_moo, multiply_mask, concat_mask):
+    def __init__(self, dataset_dir, camera_names, norm_stats, img_size, use_moo, multiply_mask, concat_mask):
         super(EpisodicDataset).__init__()
-        self.episode_ids = episode_ids
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names
         self.norm_stats = norm_stats
@@ -25,10 +25,11 @@ class EpisodicDataset(torch.utils.data.Dataset):
         self.traj_hdf5_filepaths = get_traj_hdf5_filepaths(data_dir=self.dataset_dir) # list of paths to the `trajectory.h5` files containing action labels
         self.max_episode_length = 300 # hardcoded; the policy requires all sampled actions to have the same length
         if self.use_moo:
-            self.bb_masks_hdf5_filepaths = get_bb_masks_hdf5_filepaths(data_dir=self.dataset_dir, img_size=img_size)
+            # Get OWL-ViT bounding box object mask filepaths.
+            self.traj_to_bb_mask_path_dict = get_traj_to_bb_mask_path_dict(self.traj_hdf5_filepaths, self.img_size) # dict: `trajectory.h5` path -> f`bounding_box_masks_{img_size}px.h5` path
 
     def __len__(self):
-        return len(self.episode_ids)
+        return len(self.traj_hdf5_filepaths)
 
     def __getitem__(self, index):
         # Read an image from disk.
@@ -51,23 +52,25 @@ class EpisodicDataset(torch.utils.data.Dataset):
             action_length = episode_length - step_index
         # If using MOO-style inputs, concatenate an object mask channel-wise to the image.
         if self.use_moo:
-            bb_mask_hdf5_filepath = self.bb_masks_hdf5_filepaths[index]
-            with h5py.File(bb_mask_hdf5_filepath, 'r') as f:
-                if step_index >= f['bounding_box_masks'].shape[0]: # no bounding box exists
-                    bb_mask = np.zeros((self.img_size, self.img_size), dtype=np.uint8) # shape: (H, W)
-                else: # yes bounding box exists
-                    bb_mask = f['bounding_box_masks'][step_index] # shape: (H, W)
-                    # Replace the target label with the label "object". This is similar to how the object description is excluded in the original MOO paper.
-                    target_label = 'object'
-                bb_mask = np.expand_dims(bb_mask, -1) # shape: (H, W, 1)
-                if self.multiply_mask:
-                    # Multiply the image by the object mask so that all of the image except for the detected object is zero.
-                    # Result: (H, W, 3) image
-                    image_dict[self.camera_names[0]][:,:,:3] *= (bb_mask // 255)
-                if self.concat_mask:
-                    # Concatenate the object mask to the image.
-                    # Result: (H, W, 4) image and mask
-                    image_dict[self.camera_names[0]] = np.concatenate((image_dict[self.camera_names[0]], bb_mask), axis=-1) # shape: (H, W, 4)
+            bb_mask = np.zeros((self.img_size, self.img_size), dtype=np.uint8) # shape: (H, W)
+            if self.traj_hdf5_filepaths[index] in self.traj_to_bb_mask_path_dict:
+                bb_mask_hdf5_filepath = self.traj_to_bb_mask_path_dict[self.traj_hdf5_filepaths[index]]
+                with h5py.File(bb_mask_hdf5_filepath, 'r') as f:
+                    if step_index >= f['bounding_box_masks'].shape[0]: # no bounding box exists
+                        pass # do nothing
+                    else: # yes bounding box exists
+                        bb_mask = f['bounding_box_masks'][step_index] # shape: (H, W)
+                        # Replace the target label with the label "object". This is similar to how the object description is excluded in the original MOO paper.
+                        target_label = 'object'
+            bb_mask = np.expand_dims(bb_mask, -1) # shape: (H, W, 1)
+            if self.multiply_mask:
+                # Multiply the image by the object mask so that all of the image except for the detected object is zero.
+                # Result: (H, W, 3) image
+                image_dict[self.camera_names[0]][:,:,:3] *= (bb_mask // 255)
+            if self.concat_mask:
+                # Concatenate the object mask to the image.
+                # Result: (H, W, 4) image and mask
+                image_dict[self.camera_names[0]] = np.concatenate((image_dict[self.camera_names[0]], bb_mask), axis=-1) # shape: (H, W, 4)
         # Create padded actions tensor and is_pad bool tensors because they're required by the Transformer policy.
         padded_action = np.zeros(padded_action_shape, dtype=np.float32)
         padded_action[:action_length] = action
@@ -104,26 +107,34 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
 class EpisodicDatasetMemory(torch.utils.data.Dataset):
     """Data loader that loads the whole dataset into memory."""
-    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, img_size):
+    def __init__(self, dataset_dir, camera_names, norm_stats, img_size, use_moo, multiply_mask, concat_mask):
         super(EpisodicDatasetMemory).__init__()
-        self.episode_ids = episode_ids
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names
         self.norm_stats = norm_stats
+        self.img_size = img_size
+        self.use_moo = use_moo
+        self.multiply_mask = multiply_mask
+        self.concat_mask = concat_mask
         # For UPGM R2D2:
         mp4_filepaths = get_mp4_filepaths(data_dir=self.dataset_dir, cam_serial_num=self.camera_names[0]) # list of paths to the demonstration videos
-        traj_hdf5_filepaths = get_traj_hdf5_filepaths(data_dir=self.dataset_dir) # list of paths to the `trajectory.h5` files containing action labels
-        self.max_episode_length = 1000 # hardcoded; the policy requires all sampled actions to have the same length
+        self.traj_hdf5_filepaths = get_traj_hdf5_filepaths(data_dir=self.dataset_dir) # list of paths to the `trajectory.h5` files containing action labels
+        self.max_episode_length = 300 # hardcoded; the policy requires all sampled actions to have the same length
         # Read everything from disk into memory.
         print('Loading data into memory...')
         self.images_dict = get_images_dict(mp4_filepaths, img_size)
-        self.actions_and_target_labels_dict = get_actions_and_target_labels_dict(traj_hdf5_filepaths)
-        print('Finished loading data.')
+        self.actions_and_target_labels_dict = get_actions_and_target_labels_dict(self.traj_hdf5_filepaths)
         # self.actions_dict = get_actions_dict(traj_hdf5_filepaths)
         # self.target_labels_dict = get_target_labels_dict(traj_hdf5_filepaths)
+        if self.use_moo:
+            # Get OWL-ViT bounding box object mask filepaths.
+            bb_masks_hdf5_filepaths = get_bb_masks_hdf5_filepaths(data_dir=self.dataset_dir, img_size=img_size)
+            self.traj_to_bb_mask_path_dict = get_traj_to_bb_mask_path_dict(self.traj_hdf5_filepaths, self.img_size) # dict: `trajectory.h5` path -> f`bounding_box_masks_{img_size}px.h5` path
+            self.bb_masks_dict = get_bb_masks_dict(bb_masks_hdf5_filepaths) # dict: f`bounding_box_masks_{img_size}px.h5` path -> object mask array
+        print('Finished loading data.')
 
     def __len__(self):
-        return len(self.episode_ids)
+        return len(self.images_dict)
 
     def __getitem__(self, index):
         # Fetch image.
@@ -140,6 +151,26 @@ class EpisodicDatasetMemory(torch.utils.data.Dataset):
         # Hard-coding joint positions/velocities as zeros since we don't use them as inputs in UPGM.
         qpos = np.zeros((7,))
         action_length = episode_length - step_index
+        # If using MOO-style inputs, concatenate an object mask channel-wise to the image.
+        if self.use_moo:
+            bb_mask = np.zeros((self.img_size, self.img_size), dtype=np.uint8) # shape: (H, W)
+            if self.traj_hdf5_filepaths[index] in self.traj_to_bb_mask_path_dict:
+                bb_mask_hdf5_filepath = self.traj_to_bb_mask_path_dict[self.traj_hdf5_filepaths[index]]
+                if step_index >= self.bb_masks_dict[bb_mask_hdf5_filepath].shape[0]: # no bounding box exists
+                    pass # do nothing
+                else: # yes bounding box exists
+                    bb_mask = self.bb_masks_dict[bb_mask_hdf5_filepath][step_index] # shape: (H, W)
+                    # Replace the target label with the label "object". This is similar to how the object description is excluded in the original MOO paper.
+                    target_label = 'object'
+            bb_mask = np.expand_dims(bb_mask, -1) # shape: (H, W, 1)
+            if self.multiply_mask:
+                # Multiply the image by the object mask so that all of the image except for the detected object is zero.
+                # Result: (H, W, 3) image
+                image_dict[self.camera_names[0]][:,:,:3] *= (bb_mask // 255)
+            if self.concat_mask:
+                # Concatenate the object mask to the image.
+                # Result: (H, W, 4) image and mask
+                image_dict[self.camera_names[0]] = np.concatenate((image_dict[self.camera_names[0]], bb_mask), axis=-1) # shape: (H, W, 4)
         # Create padded actions tensor and is_pad bool tensors because they're required by the Transformer policy.
         padded_action = np.zeros(padded_action_shape, dtype=np.float32)
         padded_action[:action_length] = action
@@ -279,7 +310,10 @@ def get_norm_stats(dataset_dir, num_episodes):
     traj_hdf5_filepaths = get_traj_hdf5_filepaths(dataset_dir) # list of paths to the `trajectory.h5` files containing action labels
     all_qpos_data = []
     all_action_data = []
-    for hdf5_filepath in traj_hdf5_filepaths:
+    # Compute normalization stats using the first 100 episodes (randomly sampled).
+    random.shuffle(traj_hdf5_filepaths)
+    traj_hdf5_filepaths = traj_hdf5_filepaths[:100]
+    for hdf5_filepath in tqdm(traj_hdf5_filepaths):
         with h5py.File(hdf5_filepath, 'r') as f:
             # Read action labels. Since we don't use joint positions as inputs, just set them as zeros.
             qpos = np.zeros((f['observation']['robot_state']['joint_positions'].shape[0], 7)).astype('float32') # hard-coding 7 joint positions (even though Franka has 7 + 1, where last 1 is gripper)
@@ -289,38 +323,33 @@ def get_norm_stats(dataset_dir, num_episodes):
         all_action_data.append(torch.from_numpy(action))
     all_qpos_data = torch.concat(all_qpos_data)
     all_action_data = torch.concat(all_action_data)
-
     # normalize action data
     action_mean = all_action_data.mean(dim=0, keepdim=True)
     action_std = all_action_data.std(dim=0, keepdim=True)
     action_std = torch.clip(action_std, 1e-2, 10) # clipping
-
     # normalize qpos data
     qpos_mean = torch.zeros(qpos.shape[1]) # dummy value, just zeros
     qpos_std = torch.ones(qpos.shape[1]) # dummy value, just ones
-
     stats = {"action_mean": action_mean.numpy().squeeze(), "action_std": action_std.numpy().squeeze(),
              "qpos_mean": qpos_mean.numpy().squeeze(), "qpos_std": qpos_std.numpy().squeeze(),
              "example_qpos": qpos}
-
     return stats
 
 
 def load_data(dataset_dir, num_episodes, camera_names, batch_size, img_size, apply_aug, spartn, use_ram, use_moo, multiply_mask, concat_mask):
-    print(f'\Loading data from: {dataset_dir}\n')
-    # obtain train test split
-    train_ratio = 0.9
-    shuffled_indices = np.random.permutation(num_episodes)
-    train_indices = shuffled_indices[:int(train_ratio * num_episodes)]
-    val_indices = shuffled_indices[int(train_ratio * num_episodes):]
-
-    # obtain normalization stats for qpos and action
+    # Obtain action normalization stats.
+    print(f'Dynamically computing action normalization stats...')
     norm_stats = get_norm_stats(dataset_dir, num_episodes)
-
-    # construct dataset and dataloader
-    if use_moo == True:
-        assert use_ram == False, "use_ram==True currently not supported when use_moo==True!"
-    train_dataset = EpisodicDatasetMemory(train_indices, dataset_dir, camera_names, norm_stats, img_size) if use_ram else EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats, img_size, use_moo, multiply_mask, concat_mask)
+    # Construct train/validation datasets and dataloaders.
+    train_percentage = 0.95
+    n_train = int(train_percentage * num_episodes)
+    n_val = num_episodes - n_train
+    print(f'There are {num_episodes} total demonstrations.')
+    print(f'Using {n_train} demonstrations ({train_percentage*100}%) for the training set.')
+    print(f'Using {n_val} demonstrations ({100-train_percentage*100}%) for the validation set.\n')
+    print(f'\Loading data from: {dataset_dir}\n')
+    ds = EpisodicDatasetMemory(dataset_dir, camera_names, norm_stats, img_size, use_moo, multiply_mask, concat_mask) if use_ram else EpisodicDataset(dataset_dir, camera_names, norm_stats, img_size, use_moo, multiply_mask, concat_mask)
+    [train_dataset, val_dataset] = random_split(ds, [n_train, n_val], generator=torch.Generator().manual_seed(0)) # seed to get same split every time)
     if apply_aug:
         train_dataset = AugmentedExpertedDataset(train_dataset)
     if spartn:
@@ -330,7 +359,6 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size, img_size, app
         train_weights = [0.5 * x for x in train_weights] # original dataset weights
         train_weights.extend(len(spartn_dataset) * [0.5 / len(spartn_dataset)]) # SPARTN augmentations dataset weights
         train_dataset = ConcatDataset([train_dataset, spartn_dataset])
-    val_dataset = EpisodicDatasetMemory(val_indices, dataset_dir, camera_names, norm_stats, img_size) if use_ram else EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats, img_size, use_moo, multiply_mask, concat_mask)
     num_workers = 0 if use_ram else len(os.sched_getaffinity(0)) # num CPU cores available to current training job -- do NOT use os.cpu_count()! -- source: https://stackoverflow.com/a/55423170
     print(f'Number of dataloader workers: {num_workers}')
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=num_workers)
@@ -344,7 +372,7 @@ def load_data_debug(dataset_dir, num_episodes, camera_names, batch_size, img_siz
     """For debugging with a tiny dataset."""
     print(f'\Loading data from: {dataset_dir}\n')
     # obtain train test split
-    train_ratio = 1
+    train_percentage = 1
     shuffled_indices = np.random.permutation(num_episodes)
     train_indices = shuffled_indices[:1]
     val_indices = shuffled_indices[1:]

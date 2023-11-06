@@ -44,7 +44,6 @@ def main(args):
         dataset_dir = args.data_dir
         mp4_filepaths = get_mp4_filepaths(data_dir=dataset_dir, cam_serial_num=args.cam_serial_num) # list of paths to the demonstration videos
         num_episodes = len(mp4_filepaths)
-    episode_len = 100
     camera_names = [args.cam_serial_num]
 
     # fixed parameters
